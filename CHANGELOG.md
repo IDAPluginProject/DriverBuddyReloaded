@@ -10,8 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Bug-fix pass from the 2026-06/07 two-part code review (findings B1-B19, N20-N29).
 One commit per fix; each `Fixed` bullet below is tagged with its review id.
 
+### Added
+
+- `DriverBuddyReloaded/registers.py`: pure-Python x86/x64 register helpers (alias
+  groups, memory-operand base extraction) with no IDA dependency, unit-tested
+  offline and shared by the register-tracking heuristics.
+
 ### Fixed
 
+- (B1, B2, B3, B4, B7, B16) `heuristics.check_use_after_free()`: rewritten on top
+  of `registers.py`. Previously it (B1) matched the free via raw
+  `idc.print_operand`, so an imported `call cs:__imp_ExFreePoolWithTag` was never
+  recognised and the check never started; (B2) put `mov` in its write-set, so the
+  canonical `mov rax, [rcx]` dereference-after-free was treated as a kill and never
+  flagged; (B3) killed freed state with `op0.startswith(reg)`, so `mov ecx, edx`
+  did not clear a freed `rcx` (x64 zero-extension) and produced false positives;
+  (B4) matched the freed register anywhere in the operand text, firing on
+  index-only uses like `[rdx+rcx*8]` and on `cmp rcx, 0`. It now seeds the CFG walk
+  at the true entry block (B7), frees via `_callee_name` (import-aware), flags a use
+  only on a base dereference of the freed register, kills alias-aware, and clears
+  tracking across intervening (caller-saved-clobbering) calls. Sixteen new
+  regression checks (register helpers + end-to-end synthetic instruction streams).
+  NOTE: this intentionally changes `use-after-free` findings (removing prior false
+  positives); the golden regression must be re-run in IDA and re-baselined.
 - (B18) `dump_pool_tags.py`: the pool-tag scanners compared the operand type
   against the bare literal `5` instead of the named `idc.o_imm`, an opaque magic
   number inconsistent with the rest of the codebase. Now use `idc.o_imm`.

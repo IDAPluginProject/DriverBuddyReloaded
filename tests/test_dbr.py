@@ -450,6 +450,66 @@ def main():
     check(_parse_load("[rcx+rdx*4+8]") == ("rcx", "rdx*4+8"),
           "N22: SIB+disp [rcx+rdx*4+8] matched")
 
+    # ---- B3/B4: register helper (width-aware aliasing, base vs scaled index) ----
+    from DriverBuddyReloaded import registers as _regs
+    check("ecx" in _regs.aliases("rcx") and "rcx" in _regs.aliases("ecx"),
+          "B3: rcx and ecx share one alias group")
+    check(_regs.aliases("rcx") == _regs.aliases("cl"),
+          "B3: every rcx-group name resolves to the same alias set")
+    check(_regs.memory_base("[rcx+8]") == "rcx", "B2: [rcx+8] base register is rcx")
+    check(_regs.memory_base("[rcx]") == "rcx", "B2: [rcx] base register is rcx")
+    check(_regs.memory_base("[rdx+rcx*8]") == "rdx",
+          "B4: [rdx+rcx*8] base is rdx, not the scaled index rcx")
+    check(_regs.memory_base("rcx") is None, "B4: a bare register has no memory base")
+    check(_regs.dest_register("ecx") == "ecx" and _regs.dest_register("[rcx]") is None,
+          "B3: dest_register names a bare register, not a memory operand")
+
+    # ---- B1-B4: check_use_after_free end-to-end on synthetic instruction streams ----
+    from DriverBuddyReloaded import heuristics as _heur2
+
+    class _Blk:
+        def __init__(self, s, e):
+            self.start_ea, self.end_ea = s, e
+
+        def succs(self):
+            return []
+
+    class _Func:
+        def __init__(self, s, e):
+            self.start_ea, self.end_ea = s, e
+
+    def _run_uaf(instrs, base=0x100):
+        # instrs: list of (mnem, op0, op1) laid out at base, base+4, ...
+        table = {base + 4 * k: t for k, t in enumerate(instrs)}
+        end = base + 4 * len(instrs)
+        func = _Func(base, end)
+        idafuncs_stub.get_func = lambda ea, f=func: f
+        idafuncs_stub.get_func_name = lambda ea: "TestHandler"
+        idaapi_stub.FlowChart = lambda fn, flags=0, blk=_Blk(base, end): [blk]
+        idc_stub.print_insn_mnem = lambda ea, t=table: t.get(ea, ("", "", ""))[0]
+        idc_stub.print_operand = lambda ea, n, t=table: t.get(ea, ("", "", ""))[1 + n]
+        idc_stub.next_head = lambda ea, e=end: (ea + 4) if (ea + 4) < e else _BADADDR
+        idautils_stub.CodeRefsFrom = lambda ea, flow: iter([])
+        rep_u = reporting.Reporter()
+        _heur2.check_use_after_free(rep_u, AnalysisContext(), base)
+        return len([f for f in rep_u.by_category("heuristic")
+                    if "use-after-free" in f.title.lower()])
+
+    _free = "cs:__imp_ExFreePoolWithTag"
+    check(_run_uaf([("call", _free, ""), ("mov", "rax", "[rcx]")]) == 1,
+          "B1/B2: imported ExFreePoolWithTag then [rcx] dereference is flagged")
+    check(_run_uaf([("call", "ExFreePool", ""), ("mov", "rax", "[rcx]")]) == 1,
+          "B1: local ExFreePool call then dereference is flagged")
+    check(_run_uaf([("call", _free, ""), ("mov", "rax", "[rdx+rcx*8]")]) == 0,
+          "B4: freed register used only as a scaled index is not flagged")
+    check(_run_uaf([("call", _free, ""), ("mov", "ecx", "edx"), ("mov", "rax", "[rcx]")]) == 0,
+          "B3: mov ecx,edx clears freed rcx (zero-extension) so later [rcx] is not flagged")
+    check(_run_uaf([("call", _free, ""), ("cmp", "rcx", "0")]) == 0,
+          "B4: cmp rcx,0 (null check, no dereference) is not flagged")
+    check(_run_uaf([("call", _free, ""), ("call", "SomeOtherFunc", ""),
+                    ("mov", "rax", "[rcx]")]) == 0,
+          "UAF: an intervening non-free call clears tracking (caller-saved reg)")
+
     print("\n{} check(s), {} failure(s)".format(total[0], len(failures)))
     return 1 if failures else 0
 

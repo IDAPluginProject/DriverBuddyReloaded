@@ -30,7 +30,7 @@ try:
 except ImportError:  # pragma: no cover
     ida_xref = None
 
-from DriverBuddyReloaded import config, ida_compat, signatures as sig
+from DriverBuddyReloaded import config, ida_compat, registers, signatures as sig
 from DriverBuddyReloaded.callchain import handler_seed_eas, transitive_callees
 from DriverBuddyReloaded.reporting import Finding
 
@@ -483,25 +483,39 @@ def check_double_fetch(rep: "Reporter", handler_ea: int) -> None:
             break
 
 
-_FREE_ARG_REG_X64 = {"rcx", "ecx"}
-_FREE_ARG_REG_X86 = {"ecx"}
-_MOV_WRITES = {"mov", "lea", "xor", "sub", "and", "or", "not", "neg",
-               "movzx", "movsx", "movsxd", "add", "imul", "inc", "dec"}
+# Instructions that write their first (destination) operand.  cmp/test/push read
+# op0 but do not write it, so they must NOT clear a tracked register.
+_DEST_WRITE_MNEMS = frozenset({
+    "mov", "lea", "movzx", "movsx", "movsxd", "movsd", "movaps", "movdqa", "movdqu",
+    "xor", "or", "and", "add", "sub", "adc", "sbb", "imul", "mul",
+    "inc", "dec", "neg", "not", "sar", "shl", "shr", "sal", "rol", "ror",
+    "pop", "xchg", "cmove", "cmovne", "cmovz", "cmovnz",
+})
 
 
 def check_use_after_free(rep: "Reporter", ctx: "AnalysisContext", handler_ea: int) -> None:
     """
-    N6: Use-after-free heuristic.
+    N6: intra-function use-after-free heuristic.
 
-    Forward-walks each basic block in the function CFG.  When a call to a
-    FREE_POOL_FUNCS function is seen, records the argument register (RCX on x64,
-    ECX on x86).  If any subsequent instruction in the same or a successor block
-    reads that register before it is overwritten by a write instruction, emits a
-    HIGH finding.
+    Forward-walks the function CFG.  A call to a FREE_POOL_FUNCS function marks the
+    first-argument register (rcx/ecx and its width aliases) as holding a freed
+    ("dangling") pointer.  A subsequent DEREFERENCE through that register -- it
+    appears as the BASE of a memory operand `[reg...]` -- before the register is
+    reassigned emits a HIGH finding.
 
-    This is a single-pass, intra-function check; it will miss UAF across function
-    boundaries but catches the simple case of pool-free followed by dereference in
-    the same handler.
+    Precision (vs the earlier substring approach):
+      * frees are matched via _callee_name, so an imported
+        `call cs:__imp_ExFreePoolWithTag` is recognised, not only a local call (B1);
+      * a base dereference is the only "use" that counts, so a subsequent
+        `mov rax, [rcx]` IS flagged (B2) while a freed register appearing only as a
+        scaled *index* (`[rdx+rcx*8]`) or in a bare `cmp rcx, 0` is NOT (B4);
+      * a write to ANY width alias clears the tracked register, so
+        `mov ecx, edx` correctly kills a freed rcx (B3);
+      * an intervening non-free `call` clears tracking -- the first-argument
+        register is caller-saved and cannot be assumed to survive the call.
+
+    Intra-function only; cross-function/global UAF is handled by
+    check_use_after_free_global.
     """
     try:
         func = ida_funcs.get_func(handler_ea)
@@ -512,76 +526,85 @@ def check_use_after_free(rep: "Reporter", ctx: "AnalysisContext", handler_ea: in
         return
 
     func_name = ida_funcs.get_func_name(handler_ea) or ""
-    is_64 = False
     try:
         from DriverBuddyReloaded.ida_compat import is_64bit
         is_64 = is_64bit()
     except Exception:
-        pass
+        is_64 = True
+    free_regs = registers.aliases("rcx") if is_64 else registers.aliases("ecx")
 
-    free_regs = _FREE_ARG_REG_X64 if is_64 else _FREE_ARG_REG_X86
-
-    # BFS over basic blocks; carry freed register sets across block boundaries.
     from collections import deque
-    freed_at_block = {}
-    queue = deque()
-    # Seed with the entry block carrying an empty freed set.
-    queue.append((next(iter(fc), None), set()))
+    # Seed the BFS at the block that actually contains the function entry, not
+    # whatever block FlowChart happens to yield first -- iteration order is not
+    # guaranteed to start at the entry, and seeding elsewhere would skip the
+    # instructions the free/use pattern lives in (B7).
+    entry_bb = None
+    for bb in fc:
+        if bb.start_ea <= func.start_ea < bb.end_ea:
+            entry_bb = bb
+            break
+    if entry_bb is None:
+        entry_bb = next(iter(fc), None)
+    if entry_bb is None:
+        return
+
+    queue = deque([(entry_bb, frozenset())])
     visited = set()
+    reported = set()
 
     while queue:
         bb, freed = queue.popleft()
-        if bb is None:
+        if bb is None or bb.start_ea in visited:
             continue
-        key = bb.start_ea
-        if key in visited:
-            continue
-        visited.add(key)
-        freed_at_block[key] = set(freed)
+        visited.add(bb.start_ea)
 
         current_freed = set(freed)
         ea = bb.start_ea
         while ea < bb.end_ea:
             mnem = idc.print_insn_mnem(ea).lower()
-            op0_text = idc.print_operand(ea, 0).lower()
-            op1_text = idc.print_operand(ea, 1).lower()
 
             if mnem == "call":
-                callee = idc.print_operand(ea, 0)
-                if callee in sig.FREE_POOL_FUNCS:
-                    # The first argument register is now freed.
-                    current_freed.update(free_regs)
-            elif current_freed:
-                if mnem in _MOV_WRITES:
-                    # Destination write kills the freed state for that register.
-                    for reg in list(current_freed):
-                        if op0_text.startswith(reg):
-                            current_freed.discard(reg)
+                if _callee_name(ea) in sig.FREE_POOL_FUNCS:
+                    current_freed |= free_regs         # first arg now dangling
                 else:
-                    # Check if a freed register appears as a source operand (use).
-                    for reg in current_freed:
-                        if reg in op1_text or reg in op0_text:
-                            rep.add(Finding(
-                                category="heuristic",
-                                title="Potential use-after-free: {} read after free".format(reg),
-                                ea=ea,
-                                func=func_name,
-                                severity=config.SEV_HIGH,
-                                detail="Register {} used at 0x{:x} after ExFreePool* call; "
-                                       "verify pointer is nulled before reuse".format(
-                                           reg, ea)))
-                            current_freed.discard(reg)
+                    current_freed = set()              # caller-saved reg clobbered
+            elif current_freed:
+                op0 = idc.print_operand(ea, 0)
+                op1 = idc.print_operand(ea, 1)
+                base0 = registers.memory_base(op0)
+                base1 = registers.memory_base(op1)
+                used = None
+                if base0 is not None and base0 in current_freed:
+                    used = base0
+                elif base1 is not None and base1 in current_freed:
+                    used = base1
+                if used is not None:
+                    if ea not in reported:
+                        reported.add(ea)
+                        rep.add(Finding(
+                            category="heuristic",
+                            title="Potential use-after-free: {} dereferenced after free".format(used),
+                            ea=ea,
+                            func=func_name,
+                            severity=config.SEV_HIGH,
+                            detail="Register {} dereferenced at 0x{:x} after an ExFreePool* "
+                                   "call; verify the pointer is nulled before reuse".format(used, ea)))
+                    current_freed -= registers.aliases(used)
+                elif mnem in _DEST_WRITE_MNEMS:
+                    dst = registers.dest_register(op0)
+                    if dst is not None:
+                        current_freed -= registers.aliases(dst)
 
             nxt = idc.next_head(ea, bb.end_ea)
             if nxt == idc.BADADDR or nxt == ea:
                 break
             ea = nxt
 
-        # Propagate freed set to successor blocks.
+        # Propagate the freed set to successor blocks.
         try:
             for succ in bb.succs():
                 if succ.start_ea not in visited:
-                    queue.append((succ, set(current_freed)))
+                    queue.append((succ, frozenset(current_freed)))
         except Exception:
             pass
 
