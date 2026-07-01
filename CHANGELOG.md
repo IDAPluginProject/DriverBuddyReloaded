@@ -33,6 +33,10 @@ One commit per fix; each `Fixed` bullet below is tagged with its review id.
   regression checks (register helpers + end-to-end synthetic instruction streams).
   NOTE: this intentionally changes `use-after-free` findings (removing prior false
   positives); the golden regression must be re-run in IDA and re-baselined.
+- (N26) `ida_compat.import_std_type()` (IDA < 9 path): the failure check
+  `tid in (None, BADADDR, -1)` treated ordinal `0` as a valid type. Type ordinals
+  are 1-based, so a non-positive result now also counts as "not found" (the `None`
+  test short-circuits before the numeric comparison). Latent robustness fix.
 - (B19) `settings_ui._on_ok()` / `config.Feature.validate()`: the settings dialog
   reimplemented the feature-flag coherence rules, so a new constraint added to
   `Feature.validate()` would not be enforced by the UI. The rules now live once in

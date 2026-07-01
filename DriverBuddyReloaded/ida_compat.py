@@ -221,7 +221,10 @@ def import_std_type(name):
     """
     if not IS_IDA9:
         tid = idc.import_type(-1, name)
-        if tid in (None, BADADDR, -1):
+        # Type ordinals are 1-based in IDA, so any non-positive result (0 / -1)
+        # and the BADADDR/None sentinels mean "not found".  The `in (...)` test
+        # short-circuits before the `<= 0` comparison, so a None tid is safe.
+        if tid in (None, BADADDR, -1) or tid <= 0:
             return None
         return tid
     tid = get_type_tid(name)
