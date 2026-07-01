@@ -24,6 +24,11 @@ One commit per fix; each `Fixed` bullet below is tagged with its review id.
   round-trip), and the second (source) operand is tried before the first, matching
   where the code actually sits in the observed compare/move patterns. Two new
   regression checks.
+- (B8) `ioctl_decoder._collect_switch_cases()`: scanned only the primary chunk
+  (`start_ea..end_ea` via `next_head`), so a jump-table switch located in a
+  secondary/tail function chunk (SEH funclet, `__guard_*` thunk) was skipped and
+  its IOCTLs lost. Now iterates every instruction head across all chunks via
+  `idautils.FuncItems`.
 - (N29) `analysis.run_analysis()`: `utils.get_driver_id()` was the only pipeline
   step not wrapped in `_stage()`, so an exception in its fragile WDF/DDC code
   aborted the entire run. `_stage()` now returns the wrapped call's value (a no-op

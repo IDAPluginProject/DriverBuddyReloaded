@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 import ida_funcs
 import idaapi
+import idautils
 import idc
 
 from DriverBuddyReloaded import config, ida_compat
@@ -452,14 +453,17 @@ def _collect_switch_cases(func_ea: int):
     """
     out = []
     try:
-        f = idaapi.get_func(func_ea)
-        if not f:
-            return out
         calc = getattr(idaapi, "calc_switch_cases", None)
-        cur = f.start_ea
-        while cur != idc.BADADDR and cur < f.end_ea:
+        if calc is None:
+            return out
+        # Iterate every instruction head across ALL chunks of the function
+        # (idautils.FuncItems), not just the primary start_ea..end_ea range.
+        # A jump-table switch can live in a secondary/tail chunk (SEH funclet,
+        # __guard_* thunk), which the old start_ea..end_ea + next_head walk never
+        # visited -- losing the IOCTLs dispatched from that chunk.
+        for cur in idautils.FuncItems(func_ea):
             si = _get_switch_info(cur)
-            if si is not None and getattr(si, "ncases", 0) and calc is not None:
+            if si is not None and getattr(si, "ncases", 0):
                 try:
                     defjump = int(getattr(si, "defjump", idc.BADADDR))
                     cat = calc(cur, si)
@@ -471,7 +475,6 @@ def _collect_switch_cases(func_ea: int):
                             out.append((int(cvec[j]) & 0xffffffff, cur))
                 except Exception:
                     pass
-            cur = idc.next_head(cur, f.end_ea)
     except Exception:
         pass
     return out
