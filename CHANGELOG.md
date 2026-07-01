@@ -33,6 +33,12 @@ One commit per fix; each `Fixed` bullet below is tagged with its review id.
   regression checks (register helpers + end-to-end synthetic instruction streams).
   NOTE: this intentionally changes `use-after-free` findings (removing prior false
   positives); the golden regression must be re-run in IDA and re-baselined.
+- (B19) `settings_ui._on_ok()` / `config.Feature.validate()`: the settings dialog
+  reimplemented the feature-flag coherence rules, so a new constraint added to
+  `Feature.validate()` would not be enforced by the UI. The rules now live once in
+  `Feature._coherence_errors()`; `validate()` accepts an optional proposed
+  `{flag: bool}` mapping and the dialog calls it, so UI and startup validation can
+  no longer drift. Three new regression checks.
 - (B18) `dump_pool_tags.py`: the pool-tag scanners compared the operand type
   against the bare literal `5` instead of the named `idc.o_imm`, an opaque magic
   number inconsistent with the rest of the codebase. Now use `idc.o_imm`.

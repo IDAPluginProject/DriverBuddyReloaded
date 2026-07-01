@@ -45,13 +45,34 @@ class Feature:
     SYMLINK_TRACK       = True
     UAF_DETECT          = True
 
+    @staticmethod
+    def _coherence_errors(flags):
+        """Return a list of human-readable error strings for an incoherent
+        {flag_name: bool} mapping.  Single source of truth for the coherence
+        rules, shared by validate() (startup) and the settings UI (pre-apply) so
+        the two can never drift out of sync."""
+        errors = []
+        if flags.get("CALLCHAIN") and not flags.get("IOCTL_SCAN"):
+            errors.append("Callchain tracing requires IOCTL scan to be enabled.")
+        if flags.get("IOCTL_DECOMPILER") and not flags.get("IOCTL_SCAN"):
+            errors.append("IOCTL decompiler requires IOCTL scan to be enabled.")
+        return errors
+
     @classmethod
-    def validate(cls):
-        """Raise ValueError if the current feature-flag combination is incoherent."""
-        if cls.CALLCHAIN and not cls.IOCTL_SCAN:
-            raise ValueError("Feature.CALLCHAIN requires Feature.IOCTL_SCAN")
-        if cls.IOCTL_DECOMPILER and not cls.IOCTL_SCAN:
-            raise ValueError("Feature.IOCTL_DECOMPILER requires Feature.IOCTL_SCAN")
+    def validate(cls, flags=None):
+        """Raise ValueError if the feature-flag combination is incoherent.
+
+        With no argument, validates the current class attributes (startup check).
+        Given a {flag_name: bool} mapping, validates that instead -- the settings
+        UI passes its proposed values here before applying them, so the UI and
+        the startup check enforce exactly the same rules.
+        """
+        if flags is None:
+            flags = {name: getattr(cls, name) for name in vars(cls)
+                     if name.isupper()}
+        errors = cls._coherence_errors(flags)
+        if errors:
+            raise ValueError(" ".join(errors))
 
 
 # --------------------------------------------------------------------------- #

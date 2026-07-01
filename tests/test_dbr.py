@@ -510,6 +510,28 @@ def main():
                     ("mov", "rax", "[rcx]")]) == 0,
           "UAF: an intervening non-free call clears tracking (caller-saved reg)")
 
+    # ---- B19: settings-UI validation shares config.Feature.validate ----
+    _reject = False
+    try:
+        config.Feature.validate({"CALLCHAIN": True, "IOCTL_SCAN": False})
+    except ValueError:
+        _reject = True
+    check(_reject, "B19: Feature.validate(proposed) rejects CALLCHAIN without IOCTL_SCAN")
+    _accept = True
+    try:
+        config.Feature.validate({"CALLCHAIN": True, "IOCTL_SCAN": True,
+                                 "IOCTL_DECOMPILER": True})
+    except ValueError:
+        _accept = False
+    check(_accept, "B19: Feature.validate(proposed) accepts a coherent mapping")
+    # The no-argument form still validates the live (shipped-default) config.
+    _live_ok = True
+    try:
+        config.Feature.validate()
+    except ValueError:
+        _live_ok = False
+    check(_live_ok, "B19: Feature.validate() with no args validates the live config")
+
     print("\n{} check(s), {} failure(s)".format(total[0], len(failures)))
     return 1 if failures else 0
 
