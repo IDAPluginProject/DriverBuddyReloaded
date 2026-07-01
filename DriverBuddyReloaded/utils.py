@@ -16,6 +16,7 @@ from typing import Dict, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from DriverBuddyReloaded.reporting import Reporter
 
+import ida_bytes
 import ida_funcs
 import ida_nalt
 import ida_segment
@@ -254,9 +255,38 @@ _WORLD_SIDS = {"WD", "S-1-1-0", "BU", "S-1-5-32-545"}
 _SDDL_PREFIXES = ("D:", "O:", "G:", "S:")
 
 
+def _decode_sddl_at(ea: int, length: int) -> Optional[str]:
+    """
+    Read the string at *ea* and return it if it looks like an SDDL descriptor.
+
+    Reads raw bytes and tries wide (UTF-16LE) then narrow (latin-1), cutting at
+    the first NUL.  This mirrors the raw-bytes approach used for symlink paths:
+    idc.get_strlit_contents() transcodes a wide string to UTF-8, so decoding its
+    result as UTF-16 mangles it, and decoding a narrow (ASCII) string as UTF-16
+    mangles it the other way.  Trying wide-then-narrow on the raw bytes and
+    keeping whichever yields an SDDL prefix handles both string kinds regardless
+    of the recorded string type.
+    """
+    # length may be a char count (wide) or a byte count (narrow); read enough to
+    # cover either interpretation, bounded so a bogus length can't runaway-read.
+    nbytes = max(8, min(int(length) * 2 + 2, 0x400)) if length else 0x400
+    raw = ida_bytes.get_bytes(ea, nbytes) or b""
+    for enc in ("utf-16-le", "latin-1"):
+        try:
+            s = raw.decode(enc, errors="ignore")
+        except Exception:
+            continue
+        nul = s.find("\x00")
+        if nul != -1:
+            s = s[:nul]
+        if len(s) > 4 and any(s.startswith(p) for p in _SDDL_PREFIXES):
+            return s
+    return None
+
+
 def _build_sddl_map() -> dict:
     """
-    Scan the IDA string list for UTF-16 strings that look like SDDL descriptors.
+    Scan the IDA string list for strings that look like SDDL descriptors.
     Returns {ea: sddl_string}.
     """
     result = {}
@@ -266,11 +296,8 @@ def _build_sddl_map() -> dict:
             if not ida_strlist.get_strlist_item(sc, i):
                 continue
             try:
-                raw = idc.get_strlit_contents(sc.ea, sc.length, sc.type)
-                if not raw:
-                    continue
-                s = raw.decode("utf-16-le", errors="ignore").rstrip("\x00")
-                if len(s) > 4 and any(s.startswith(p) for p in _SDDL_PREFIXES):
+                s = _decode_sddl_at(sc.ea, sc.length)
+                if s:
                     result[sc.ea] = s
             except Exception:
                 continue

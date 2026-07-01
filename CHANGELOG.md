@@ -24,6 +24,12 @@ One commit per fix; each `Fixed` bullet below is tagged with its review id.
   round-trip), and the second (source) operand is tried before the first, matching
   where the code actually sits in the observed compare/move patterns. Two new
   regression checks.
+- (B14) `utils._build_sddl_map()`: decoded every candidate string as UTF-16LE
+  regardless of the recorded string type, so an ASCII SDDL was mangled to garbage
+  and dropped (and `get_strlit_contents` transcodes wide strings to UTF-8, which
+  also mis-decodes when read back as UTF-16). Replaced with `_decode_sddl_at()`,
+  which reads raw bytes and tries wide-then-narrow, cutting at the first NUL
+  (same approach as the symlink-path decoder). Two new regression checks.
 - (B17) `signatures.py`: filled gaps in the function/instruction sets.
   `VALIDATION_FUNCS` gains the `RtlUIntAdd/Sub/Mult` safe-arithmetic family.
   `FREE_POOL_FUNCS` gains `IoFreeMdl` (its freed pointer is the first argument,

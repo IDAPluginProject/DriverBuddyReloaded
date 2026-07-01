@@ -388,6 +388,18 @@ def main():
     check(not _opdec_calls,
           "B5: find_ioctls does not mutate the IDB display format (no op_dec)")
 
+    # ---- B14: SDDL decode handles both wide (UTF-16LE) and narrow (ASCII) ----
+    from DriverBuddyReloaded import utils as _utils
+    ida_bytes_stub = sys.modules["ida_bytes"]
+    _wide_sddl = "D:P(A;;GA;;;WD)".encode("utf-16-le") + b"\x00\x00"
+    ida_bytes_stub.get_bytes = lambda ea, n: _wide_sddl
+    check(_utils._decode_sddl_at(0x1000, len("D:P(A;;GA;;;WD)")) == "D:P(A;;GA;;;WD)",
+          "B14: wide (UTF-16LE) SDDL decodes correctly")
+    _narrow_sddl = b"O:BAG:BAD:(A;;GA;;;WD)\x00"
+    ida_bytes_stub.get_bytes = lambda ea, n: _narrow_sddl
+    check(_utils._decode_sddl_at(0x1000, 22) == "O:BAG:BAD:(A;;GA;;;WD)",
+          "B14: narrow (ASCII) SDDL decodes correctly (not mangled as UTF-16)")
+
     print("\n{} check(s), {} failure(s)".format(total[0], len(failures)))
     return 1 if failures else 0
 
