@@ -24,6 +24,13 @@ One commit per fix; each `Fixed` bullet below is tagged with its review id.
   round-trip), and the second (source) operand is tried before the first, matching
   where the code actually sits in the observed compare/move patterns. Two new
   regression checks.
+- (N24, N25) `wdm.define_ddc()` (cosmetic struct-member labelling): the
+  `IO_STACK_LOCATION.OutputBufferLength` test `io_stack_reg + "+8" in disasm`
+  also matched `+80h`/`+88h` (substring), so a store to offset 0x80/0x88 was
+  mislabelled as the +8 field; now anchored on the closing bracket (`+8]`). The
+  IRP / IO_STACK_LOCATION canary registers are now guarded by explicit
+  `*_resolved` flags so the placeholder sentinel strings can never match real
+  disassembly. Both are labelling-only fixes; IOCTL recovery is unaffected.
 - (N20) `wdm.locate_ddc()`: matched the dispatch-slot offset with
   `_DDC_OFFSET in idc.print_operand(i, 0)[4:]`, hard-coding a 4-character `[reg`
   prefix. For a 2-character base register the slice ate the leading `+`

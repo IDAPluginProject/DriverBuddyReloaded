@@ -146,10 +146,18 @@ def define_ddc(ddc_address, rep):
     rcx_flag = 0
     io_stack_flag = 0
     irp_reg_flag = 0
+    # Whether the IRP / IO_STACK_LOCATION pointer register has been resolved to a
+    # real register yet.  Guards the `<canary> in disasm` tests below so the
+    # placeholder sentinels ("irp_reg", "io_stack_reg") can never spuriously match
+    # real disassembly text (N25).  Behaviour is otherwise unchanged: an unresolved
+    # sentinel never appears in disassembly, so these guards only make that
+    # explicit.
+    irp_resolved = False
+    io_stack_resolved = False
     for i in idautils.FuncItems(ddc_address):
         disasm = ida_compat.disasm_text(i)
         src = idc.print_operand(i, 1)
-        if "rdx" in disasm and rdx_flag != 1 or irp_reg in disasm and irp_reg_flag != 1:
+        if ("rdx" in disasm and rdx_flag != 1) or (irp_resolved and irp_reg in disasm and irp_reg_flag != 1):
             # `IO_STACK_LOCATION` (IRP + 0B8h)
             if "+0B8h" in disasm:
                 if "rdx+0B8h" in src or irp_reg + "+0B8h" in src:
@@ -157,6 +165,7 @@ def define_ddc(ddc_address, rep):
                     if idc.print_insn_mnem(i) == "mov":
                         io_stack_reg = idc.print_operand(i, 0)
                         io_stack_flag = 0
+                        io_stack_resolved = True
                 else:
                     ida_compat.op_struct_offset(i, 0, irp_id)
             # `IRP + SystemBuffer` (IRP + 18h)
@@ -175,6 +184,7 @@ def define_ddc(ddc_address, rep):
             elif idc.print_insn_mnem(i) == "mov" and (src == "rdx" or src == irp_reg):
                 irp_reg = idc.print_operand(i, 0)
                 irp_reg_flag = 0
+                irp_resolved = True
             # rdx got clobbered
             elif idc.print_insn_mnem(i) == "mov" and idc.print_operand(i, 0) == "rdx":
                 rdx_flag = 1
@@ -194,7 +204,7 @@ def define_ddc(ddc_address, rep):
             # rcx got clobbered
             elif idc.print_insn_mnem(i) == "mov" and idc.print_operand(i, 0) == "rcx":
                 rcx_flag = 1
-        elif io_stack_reg in disasm and io_stack_flag != 1:
+        elif io_stack_resolved and io_stack_reg in disasm and io_stack_flag != 1:
             # `IO_STACK_LOCATION + DeviceIoControlCode` (+18h)
             if io_stack_reg + "+18h" in disasm:
                 if io_stack_reg + "+18h" in src:
@@ -207,9 +217,11 @@ def define_ddc(ddc_address, rep):
                     ida_compat.op_struct_offset(i, 1, io_stack_location_id)
                 else:
                     ida_compat.op_struct_offset(i, 0, io_stack_location_id)
-            # `IO_STACK_LOCATION + OutputBufferLength` (+8)
-            elif io_stack_reg + "+8" in disasm:
-                if io_stack_reg + "+8" in src:
+            # `IO_STACK_LOCATION + OutputBufferLength` (+8).  Anchor on the closing
+            # bracket so this does not also match +80h / +88h etc. (N24): IDA prints
+            # offset 8 as "[reg+8]" (single digit, no 'h'), so "reg+8]" is exact.
+            elif io_stack_reg + "+8]" in disasm:
+                if io_stack_reg + "+8]" in src:
                     ida_compat.op_struct_offset(i, 1, io_stack_location_id)
                 else:
                     ida_compat.op_struct_offset(i, 0, io_stack_location_id)
