@@ -24,6 +24,12 @@ One commit per fix; each `Fixed` bullet below is tagged with its review id.
   round-trip), and the second (source) operand is tried before the first, matching
   where the code actually sits in the observed compare/move patterns. Two new
   regression checks.
+- (B10) `DriverBuddyReloaded.py` (IOCTL row-delete / "Invalid IOCTL"): removing an
+  IOCTL only called `idc.del_extra_cmt(ea, E_PREV + 0)`, which clears just the
+  first anterior line. `make_comment` can append several anterior lines
+  (E_PREV, E_PREV+1, ...), so the rest leaked and stayed in the decompiler view.
+  New `ida_compat.del_anterior_cmts(ea)` deletes every anterior line (highest
+  index first); both delete paths now use it.
 - (B11) `DriverBuddyReloaded.make_comment()`: the duplicate-suppression check
   (`string not in current_comment`) compared the whole IOCTL `#define`, whose
   macro name is derived from the input filename. Re-decoding the same IOCTL after

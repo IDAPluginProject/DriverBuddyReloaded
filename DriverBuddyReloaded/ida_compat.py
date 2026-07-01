@@ -277,3 +277,18 @@ def add_anterior_cmt(ea, line):
     disassembly listing and (unlike a plain set_cmt) in the HexRays pseudocode.
     Replacement for the non-existent idc.add_extra_cmt."""
     return bool(ida_lines.add_extra_cmt(ea, True, line))
+
+
+def del_anterior_cmts(ea):
+    """Delete ALL anterior (E_PREV) comment lines at `ea`.
+
+    `del_extra_cmt(ea, E_PREV)` removes only the first line; add_anterior_cmt can
+    accumulate several (E_PREV, E_PREV+1, ...), so a single delete leaked the
+    rest.  Count the lines, then delete from the highest index down so no slot is
+    left dangling.  Returns the number of lines removed."""
+    n = 0
+    while ida_lines.get_extra_cmt(ea, ida_lines.E_PREV + n) is not None:
+        n += 1
+    for i in range(n - 1, -1, -1):
+        ida_lines.del_extra_cmt(ea, ida_lines.E_PREV + i)
+    return n

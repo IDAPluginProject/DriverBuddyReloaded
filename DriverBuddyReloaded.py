@@ -166,7 +166,7 @@ class IOCTLChooser(ida_kernwin.Choose):
             self._rep.remove_findings_at(removed.ea)
             self._rep.re_save()
         if removed.ea not in (None, reporting.BADADDR):
-            idc.del_extra_cmt(removed.ea, idc.E_PREV + 0)
+            ida_compat.del_anterior_cmts(removed.ea)
             idc.set_cmt(removed.ea, "", 0)
             code = removed.data.get("code") if removed.data else None
             if code is not None:
@@ -295,7 +295,7 @@ class InvalidHandler(ActionHandler):
         define = ioctl_decoder.get_define(code)
         comment = comment.replace(define, "")
         idc.set_cmt(pos, comment, 0)
-        idc.del_extra_cmt(pos, idc.E_PREV + 0)
+        ida_compat.del_anterior_cmts(pos)
         ioctl_tracker.remove_ioctl(pos, code)
         if _last_rep is not None:
             _last_rep.remove_findings_at(pos)
