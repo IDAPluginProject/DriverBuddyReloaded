@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Bug-fix pass from the 2026-06/07 two-part code review (findings B1-B19, N20-N29).
-One commit per fix; each `Fixed` bullet below is tagged with its review id.
+## [2.4.0] - 2026-07-03
+
+The 2026-06/07 two-part code review (findings B1-B19, N20-N29), the new
+pure-Python register-tracking helpers, and a settings-dialog robustness fix.
+Each review-derived `Fixed` bullet below is tagged with its finding id.
 
 ### Added
 
@@ -18,6 +21,20 @@ One commit per fix; each `Fixed` bullet below is tagged with its review id.
 
 ### Fixed
 
+- `settings_ui.show_settings()`: the pre-analysis settings dialog never appeared
+  on IDA installs whose bundled PyQt5 was compiled for a different Python than the
+  one idapyswitch selected. On the test IDA 7.6 SP1 (bundled PyQt5 built for
+  `python38.dll`, interpreter switched to Python 3.10) `from PyQt5 import QtCore`
+  raised `ImportError: DLL load failed while importing sip`; the old broad
+  `except Exception -> return True` swallowed it and auto-analysis ran with no
+  dialog. The PyQt5 dialog is now the primary path (unchanged on IDA 8.4, whose
+  bundled PyQt5 matches its Python 3.10), with a new `ida_kernwin.Form` fallback
+  (`_show_settings_kernwin`) that opens automatically when PyQt5 cannot be
+  imported -- covering the 7.6 ABI mismatch and IDA 9.x (which ships PySide6, not
+  PyQt5). The fallback exposes the same feature flags and tuning constants and
+  enforces the same rules via `config.Feature.validate()`; its form string is
+  generated from the shared `_FEATURE_GROUPS`/`_TUNING` tables and was verified to
+  compile headlessly in IDA 7.6.
 - (B1, B2, B3, B4, B7, B16) `heuristics.check_use_after_free()`: rewritten on top
   of `registers.py`. Previously it (B1) matched the free via raw
   `idc.print_operand`, so an imported `call cs:__imp_ExFreePoolWithTag` was never
@@ -782,7 +799,9 @@ One commit per fix; each `Fixed` bullet below is tagged with its review id.
 
 Initial release.
 
-[Unreleased]: https://github.com/VoidSec/DriverBuddyReloaded/compare/2.2.0...HEAD
+[Unreleased]: https://github.com/VoidSec/DriverBuddyReloaded/compare/2.4.0...HEAD
+[2.4.0]: https://github.com/VoidSec/DriverBuddyReloaded/compare/2.3.0...2.4.0
+[2.3.0]: https://github.com/VoidSec/DriverBuddyReloaded/compare/2.2.0...2.3.0
 [2.2.0]: https://github.com/VoidSec/DriverBuddyReloaded/compare/2.1.0...2.2.0
 [2.1.0]: https://github.com/VoidSec/DriverBuddyReloaded/compare/2.0...2.1.0
 [2.0]: https://github.com/VoidSec/DriverBuddyReloaded/compare/1.6...2.0

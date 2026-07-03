@@ -75,6 +75,14 @@ Every module emits `Finding` objects (defined in `reporting.py`) via `rep.add_fi
 - **`_last_rep`**: module-level variable storing the Reporter from the most recent auto-analysis run. `show_all_ioctls()` and `show_findings()` use it so both windows can be reopened at any time without re-running analysis.
 - **`IOCTLTracker`**: tracks interactively-decoded IOCTL codes (address, value) across the session; separate from the Reporter findings.
 
+### Settings dialog (settings_ui.py)
+`show_settings()` opens the pre-analysis settings dialog (feature flags + tuning constants) and returns whether analysis should proceed. It has two implementations of the same dialog and picks one at runtime:
+
+- **Primary**: `_show_settings_qt()` -- the PyQt5 dialog (`_SettingsDialog`). Preferred for its `QFormLayout`/tooltip layout. This is what IDA 8.4 uses.
+- **Fallback**: `_show_settings_kernwin()` -- an `ida_kernwin.Form`, opened automatically when the PyQt path raises. PyQt fails when the IDA build's bundled PyQt5 was compiled for a different Python than idapyswitch selected (e.g. IDA 7.6 SP1 bundles a `python38` PyQt5 but the interpreter is Python 3.10 -> `ImportError: DLL load failed while importing sip`), and on IDA 9.x which ships PySide6 instead of PyQt5. Do **not** remove the PyQt path to "simplify" -- 8.4 relies on it.
+
+Both paths expose the same controls and enforce the same coherence rules via `config.Feature.validate()`. The fallback form string is generated from the shared `_FEATURE_GROUPS`/`_TUNING` tables by `_kernwin_format_string()` (checkboxes `c0..cN` grouped per category, tuning fields `i0..iM`); `ida_kernwin.Form` lays widgets out on a character grid, so tuning labels are padded to a common width to keep the input boxes aligned. Only if *both* dialogs are unavailable is a warning logged and analysis allowed to proceed with the current config. `settings_ui` imports cleanly outside IDA (PyQt import deferred in the Qt path, `import ida_kernwin` deferred in the fallback) so the pure-Python harness can import it.
+
 ### Output file naming
 `config.out_path(suffix)` returns `<IDB_DIR>/<DRIVER_NAME>-<DATE>-<UNIX_TS>-<suffix>`. All output artefacts share the same timestamp for a given run (`config._run_stamp`, reset in `DriverBuddyPlugin.run()`).
 
