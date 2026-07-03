@@ -1,12 +1,25 @@
 """
 settings_ui.py: scan-settings dialog for Driver Buddy Reloaded.
 
-Uses PyQt5 (bundled with IDA 7.6+) rather than ida_kernwin.Form, which has
-fragile format-string semantics that differ across IDA versions.
+Two implementations of the same dialog, chosen at runtime:
 
-Importing this module outside IDA is safe; all Qt imports are deferred inside
-show_settings() so the pure-Python test harness can import it without side
-effects.
+* Primary -- a PyQt5 dialog (`_SettingsDialog`).  Preferred because its
+  layout/tooltips are far nicer than ida_kernwin.Form, which has fragile
+  format-string semantics.
+* Fallback -- an ida_kernwin.Form (`_show_settings_kernwin`).  Used only when
+  PyQt5 cannot be imported.  This happens on IDA installs whose bundled PyQt5
+  was compiled for a different Python than the interpreter idapyswitch selected
+  (e.g. IDA 7.6's python38 PyQt5 running under Python 3.10 -> `ImportError: DLL
+  load failed while importing sip`), and on IDA 9.x which ships PySide6 rather
+  than PyQt5.  Without this fallback the Qt ImportError was swallowed and
+  auto-analysis ran with no settings dialog at all.
+
+Both paths expose the same feature flags and tuning constants and enforce the
+same coherence rules via `config.Feature.validate()`.
+
+Importing this module outside IDA is safe; PyQt5 imports are deferred inside the
+Qt path and `import ida_kernwin` is deferred inside the fallback, so the
+pure-Python test harness can import it without side effects.
 """
 
 from __future__ import annotations
@@ -230,25 +243,135 @@ class _SettingsDialog:
             setattr(config, attr, spin.value())
 
 
-def show_settings() -> bool:
-    """
-    Show the scan-settings dialog. Returns True if analysis should proceed.
+def _show_settings_qt() -> bool:
+    """Show the PyQt5 settings dialog. Returns True to proceed, False on Cancel.
 
-    On OK the chosen values are written to config and True is returned; on Cancel
-    False is returned so the caller aborts the run. If the dialog cannot be shown
-    (e.g. Qt unavailable), a warning is logged and True is returned so analysis
-    proceeds with the current config settings rather than being silently disabled.
+    Raises if the Qt stack cannot be loaded or run, so `show_settings()` can fall
+    back to the ida_kernwin form. On OK the chosen values are written to config.
     """
-    try:
-        dlg = _SettingsDialog()
-        from PyQt5 import QtWidgets
-        accepted = dlg.exec_() == QtWidgets.QDialog.Accepted
-    except Exception as exc:
-        print("[Driver Buddy Reloaded] Settings dialog unavailable ({}); "
-              "proceeding with current settings.".format(exc))
-        return True
-
+    from PyQt5 import QtWidgets  # ImportError when the bundled PyQt5 targets a
+                                 # different Python ABI, or on IDA 9.x (PySide6)
+    dlg = _SettingsDialog()
+    accepted = dlg.exec_() == QtWidgets.QDialog.Accepted
     if accepted:
         dlg.apply()
         return True
     return False
+
+
+def _kernwin_format_string() -> str:
+    """Build the ida_kernwin.Form format string from the shared metadata tables.
+
+    Checkboxes are named ``c0..cN`` in ``_FEATURES`` order and grouped one
+    QGroupBox-equivalent per ``_FEATURE_GROUPS`` entry; tuning fields are named
+    ``i0..iM`` in ``_TUNING`` order. Pure (no IDA import) so it can be exercised
+    offline; the control map that pairs with it is built by ``_kernwin_controls``.
+    """
+    lines = ["BUTTON YES* OK", "BUTTON CANCEL Cancel",
+             "Driver Buddy Reloaded - Settings", ""]
+    idx = 0
+    for gi, (group_name, items) in enumerate(_FEATURE_GROUPS):
+        last = len(items) - 1
+        for j, (attr, label, _tip) in enumerate(items):
+            head = "##{}##".format(group_name) if j == 0 else ""
+            closer = "{{cg{}}}>".format(gi) if j == last else ""
+            lines.append("<{}{}:{{c{}}}>{}".format(head, label, idx, closer))
+            idx += 1
+    lines.append("")
+    lines.append("Tuning parameters (instruction / depth counts):")
+    # ida_kernwin.Form lays widgets out on a character grid: the input box begins
+    # at the column where "{iN}" appears, so uneven label lengths leave the boxes
+    # ragged. Pad every label to the widest so the ":" (and the box after it) line
+    # up -- the QFormLayout in the Qt dialog did this automatically.
+    tune_label_w = max(len(label) for _attr, label, _tip in _TUNING)
+    for k, (attr, label, _tip) in enumerate(_TUNING):
+        lines.append("<{}:{{i{}}}>".format(label.ljust(tune_label_w), k))
+    return "\n".join(lines) + "\n"
+
+
+def _kernwin_controls(form_cls, tune_state):
+    """Build the control map for the fallback form.
+
+    ``form_cls`` is ``ida_kernwin.Form`` (passed in so this module needs no
+    IDA import at load time). ``tune_state`` seeds the numeric fields.
+    """
+    controls = {}
+    idx = 0
+    for gi, (_group_name, items) in enumerate(_FEATURE_GROUPS):
+        names = tuple("c{}".format(idx + j) for j in range(len(items)))
+        controls["cg{}".format(gi)] = form_cls.ChkGroupControl(names)
+        idx += len(items)
+    for k, (attr, _label, _tip) in enumerate(_TUNING):
+        controls["i{}".format(k)] = form_cls.NumericInput(
+            tp=form_cls.FT_DEC, value=int(tune_state[attr]))
+    return controls
+
+
+def _show_settings_kernwin() -> bool:
+    """Fallback settings dialog built on ida_kernwin.Form (no Qt required).
+
+    Exposes the same feature flags and tuning constants as the Qt dialog and
+    enforces the same coherence rules via ``config.Feature.validate()``. On an
+    invalid combination it warns and re-opens the form (mirroring the Qt dialog's
+    stay-open-on-invalid behaviour). Returns True to proceed, False on Cancel.
+    """
+    import ida_kernwin
+
+    fmt = _kernwin_format_string()
+    feat_state = {attr: bool(getattr(config.Feature, attr)) for attr, _ in _FEATURES}
+    tune_state = {attr: int(getattr(config, attr)) for attr, _, _ in _TUNING}
+
+    while True:
+        form = ida_kernwin.Form(fmt, _kernwin_controls(ida_kernwin.Form, tune_state))
+        form.Compile()
+        for i, (attr, _) in enumerate(_FEATURES):
+            getattr(form, "c{}".format(i)).checked = feat_state[attr]
+        ok = form.Execute()
+        if ok == 1:
+            feat_state = {attr: bool(getattr(form, "c{}".format(i)).checked)
+                          for i, (attr, _) in enumerate(_FEATURES)}
+            tune_state = {attr: max(1, int(getattr(form, "i{}".format(k)).value))
+                          for k, (attr, _, _) in enumerate(_TUNING)}
+        form.Free()
+        if ok != 1:
+            return False
+        try:
+            config.Feature.validate(feat_state)
+        except ValueError as exc:
+            ida_kernwin.warning("Driver Buddy Reloaded\n\n{}".format(exc))
+            continue
+        for attr, val in feat_state.items():
+            setattr(config.Feature, attr, val)
+        for attr, val in tune_state.items():
+            setattr(config, attr, val)
+        return True
+
+
+def show_settings() -> bool:
+    """
+    Show the scan-settings dialog. Returns True if analysis should proceed.
+
+    Tries the PyQt5 dialog first (nicer layout); on any failure to load or run
+    the Qt stack -- e.g. IDA 7.6 bundling a PyQt5 built for a different Python
+    ABI, or IDA 9.x shipping PySide6 -- falls back to the ida_kernwin form so the
+    user still gets a settings dialog instead of it being silently skipped.
+
+    On OK the chosen values are written to config and True is returned; on Cancel
+    False is returned so the caller aborts the run. Only if *both* dialogs are
+    unavailable is a warning logged and True returned, so analysis proceeds with
+    the current config rather than being silently disabled.
+    """
+    try:
+        return _show_settings_qt()
+    except Exception as qt_exc:
+        print("[Driver Buddy Reloaded] PyQt settings dialog unavailable "
+              "({}: {}); falling back to the built-in IDA form.".format(
+                  type(qt_exc).__name__, qt_exc))
+
+    try:
+        return _show_settings_kernwin()
+    except Exception as kw_exc:
+        print("[Driver Buddy Reloaded] Settings form unavailable ({}: {}); "
+              "proceeding with current settings.".format(
+                  type(kw_exc).__name__, kw_exc))
+        return True
