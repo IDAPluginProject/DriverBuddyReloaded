@@ -24,10 +24,42 @@
 
 ## Installation
 
-Copy the `DriverBuddyReloaded` folder and the `DriverBuddyReloaded.py` script file into the IDA plugins folder, for example:
+The install method depends on your IDA version, because the built-in plugin manager (and therefore the `hcli`
+tool and the `ida-plugin.json` manifest) only exists in **IDA 9.0 and above**. IDA 7.6 and 8.x have no plugin
+manager and only scan the top level of the plugins folder.
+
+### IDA 9.0+ (plugin manager / `hcli`)
+
+The repository ships an `ida-plugin.json` manifest, so IDA 9.0+ loads the plugin from its own subdirectory. Install it with:
+
+```
+hcli plugin install DriverBuddyReloaded
+```
+
+This drops the plugin into a subdirectory of your user plugins folder (e.g.
+`%APPDATA%\Hex-Rays\IDA Pro\plugins\DriverBuddyReloaded\` or `~/.idapro/plugins/DriverBuddyReloaded/`), keeping the
+`DriverBuddyReloaded.py` entry point *inside* that subdirectory. This is the intended layout: IDA reads the manifest,
+loads the declared entry point from the subdirectory, and puts the subdirectory on `sys.path` so the entry point can
+import the sibling `DriverBuddyReloaded` package. You do **not** need to move `DriverBuddyReloaded.py` to the top level.
+
+Verify the install with `hcli plugin status`, then launch IDA and confirm the plugin appears under
+`Edit -> Plugins` (check the Output window for any Python errors at startup).
+
+To install from a local checkout for testing (e.g. after your own changes), run `hcli plugin install .` from the
+repository root; `hcli plugin lint .` validates the manifest/layout first.
+
+### IDA 7.6 / 8.x (manual copy)
+
+These versions have no plugin manager, so an `hcli`-installed subdirectory plugin will **not** be picked up. Copy
+the `DriverBuddyReloaded` folder and the `DriverBuddyReloaded.py` script file directly into the **top level** of the
+IDA plugins folder, for example:
 - `%APPDATA%\Hex-Rays\IDA Pro\plugins\`
 - `C:\Program Files\IDA Pro 8.4\plugins\`
 - `~/.idapro/plugins/`
+
+The resulting layout is `plugins\DriverBuddyReloaded.py` alongside `plugins\DriverBuddyReloaded\` (the package folder).
+
+### Notes
 
 If your IDA is configured for Python 2, run the `idapyswitch` binary (located in IDA's folder) to switch it to Python 3.
 
