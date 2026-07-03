@@ -324,6 +324,20 @@ def main():
           <= sig.SYMLINK_CREATE_FUNCS,
           "N4: symlink set includes protected + unprotected create APIs")
 
+    # ---- B17: signature-set gap fills ----
+    check({"RtlUIntAdd", "RtlUIntSub", "RtlUIntMult"} <= sig.VALIDATION_FUNCS,
+          "B17: VALIDATION_FUNCS includes the RtlUInt* safe-arithmetic family")
+    check("IoFreeMdl" in sig.FREE_POOL_FUNCS,
+          "B17: FREE_POOL_FUNCS includes IoFreeMdl (first-arg free)")
+    # Non-first-argument frees must NOT be tracked as first-arg frees.
+    check(not ({"ExFreeToLookasideListEx", "ExFreeToPagedLookasideList",
+                "MmFreePagesFromMdl"} & sig.FREE_POOL_FUNCS),
+          "B17: FREE_POOL_FUNCS excludes non-first-arg / non-dangling frees")
+    check({"sidt", "sgdt", "sldt", "str"} <= set(sig.PRIV_INSN_SEVERITY),
+          "B17: PRIV_INSN_SEVERITY covers descriptor/task-register stores")
+    check(not ({"rdmsr", "wrmsr", "rdpmc"} & set(sig.PRIV_INSN_SEVERITY)),
+          "B17: PRIV_INSN_SEVERITY excludes MSR/PMC ops (covered by OPCODES scan)")
+
     # find_symbolic_links must iterate the set and rate the unprotected variant
     # higher.  Two APIs resolve (each with one call site); the WDF one is absent
     # from functions_map and so is skipped.  prev_head -> BADADDR forces the
@@ -355,6 +369,168 @@ def main():
           "N4: IoCreateSymbolicLink rated INFO")
     check(unprot is not None and unprot.severity == config.SEV_LOW,
           "N4: IoCreateUnprotectedSymbolicLink rated LOW (NULL-DACL link)")
+
+    # ---- B5+B13: find_ioctls reads the immediate directly, never mutates the IDB ----
+    from DriverBuddyReloaded import ida_compat as _ida_compat
+    idc_stub.o_imm = 5
+    # operand 1 is the immediate IOCTL; operand 0 is not an immediate.
+    idc_stub.get_operand_type = lambda ea, n: 5 if n == 1 else 4
+    idc_stub.get_operand_value = lambda ea, n: 0x9C402420 if n == 1 else 0
+    _opdec_calls = []
+    idc_stub.op_dec = lambda ea, n: _opdec_calls.append((ea, n))
+    idafuncs_stub.get_func_name = lambda ea: "DispatchDeviceControl"
+    _ida_compat.iter_text_matches = lambda needle: iter([0x1500])
+    rep_fi = reporting.Reporter()
+    found_fi = ioctl_decoder.find_ioctls(rep_fi)
+    fi = rep_fi.by_category("ioctl")
+    check(found_fi and len(fi) == 1 and fi[0].data.get("code") == 0x9C402420,
+          "B13: find_ioctls recovers the IOCTL from the second operand")
+    check(not _opdec_calls,
+          "B5: find_ioctls does not mutate the IDB display format (no op_dec)")
+
+    # ---- B14: SDDL decode handles both wide (UTF-16LE) and narrow (ASCII) ----
+    from DriverBuddyReloaded import utils as _utils
+    ida_bytes_stub = sys.modules["ida_bytes"]
+    _wide_sddl = "D:P(A;;GA;;;WD)".encode("utf-16-le") + b"\x00\x00"
+    ida_bytes_stub.get_bytes = lambda ea, n: _wide_sddl
+    check(_utils._decode_sddl_at(0x1000, len("D:P(A;;GA;;;WD)")) == "D:P(A;;GA;;;WD)",
+          "B14: wide (UTF-16LE) SDDL decodes correctly")
+    _narrow_sddl = b"O:BAG:BAD:(A;;GA;;;WD)\x00"
+    ida_bytes_stub.get_bytes = lambda ea, n: _narrow_sddl
+    check(_utils._decode_sddl_at(0x1000, 22) == "O:BAG:BAD:(A;;GA;;;WD)",
+          "B14: narrow (ASCII) SDDL decodes correctly (not mangled as UTF-16)")
+
+    # ---- B12: is_driver prefers GsDriverEntry deterministically ----
+    _entry_names = {0x400: "sub_400", 0x410: "DriverEntry",
+                    0x420: "GsDriverEntry", 0x430: "DriverEntry_0"}
+    idautils_stub.Segments = lambda: iter([0x400])
+    idautils_stub.Functions = lambda a=None, b=None: iter([0x400, 0x410, 0x420, 0x430])
+    idc_stub.get_segm_start = lambda ea: 0x400
+    idc_stub.get_segm_end = lambda ea: 0x500
+    idc_stub.get_func_name = lambda ea: _entry_names.get(ea, "")
+    check(_utils.is_driver() == 0x420,
+          "B12: is_driver prefers GsDriverEntry when several entries are present")
+    # With no GsDriverEntry, DriverEntry wins over DriverEntry_0 regardless of order.
+    _entry_names2 = {0x430: "DriverEntry_0", 0x410: "DriverEntry"}
+    idautils_stub.Functions = lambda a=None, b=None: iter([0x430, 0x410])
+    idc_stub.get_func_name = lambda ea: _entry_names2.get(ea, "")
+    check(_utils.is_driver() == 0x410,
+          "B12: is_driver prefers DriverEntry over DriverEntry_0 (order-independent)")
+
+    # ---- N27: extract_unicode_strings decodes explicit UTF-16LE ----
+    _u16 = "\\Device\\Foo".encode("utf-16-le")
+    _got = [s.s for s in device_name_finder.extract_unicode_strings(_u16, n=4)]
+    check(_got and _got[0] == "\\Device\\Foo",
+          "N27: UTF-16LE unicode string extracted correctly (explicit endianness)")
+
+    # ---- N20: DDC offset match is base-register-width independent ----
+    from DriverBuddyReloaded import wdm as _wdm
+    check(_wdm._operand_targets_offset("[rax+0E0h]", _wdm._DDC_OFFSET),
+          "N20: DDC offset matches 3-char base register [rax+0E0h]")
+    check(_wdm._operand_targets_offset("[r8+0E0h]", _wdm._DDC_OFFSET),
+          "N20: DDC offset matches 2-char base register [r8+0E0h] (was broken)")
+    check(_wdm._operand_targets_offset("[r10+0E0h]", _wdm._DDC_OFFSET),
+          "N20: DDC offset matches 3-char extended register [r10+0E0h]")
+    check(not _wdm._operand_targets_offset("[r8+0D0h]", _wdm._DDC_OFFSET),
+          "N20: DDC offset does not match a different slot [r8+0D0h]")
+
+    # ---- N22: double-fetch load regex captures SIB / indexed forms ----
+    from DriverBuddyReloaded import heuristics as _heur
+
+    def _parse_load(text):
+        m = _heur._MEM_LOAD_RE.search(text)
+        if not m:
+            return None
+        return (m.group(1), (m.group(2) or "").lstrip("+") or "0")
+
+    check(_parse_load("[rcx+8]") == ("rcx", "8"), "N22: [rcx+8] parses to (rcx, 8)")
+    check(_parse_load("[rcx]") == ("rcx", "0"), "N22: [rcx] parses to (rcx, 0)")
+    check(_parse_load("[rcx+rdx*4]") == ("rcx", "rdx*4"),
+          "N22: SIB [rcx+rdx*4] now matched (was silently skipped)")
+    check(_parse_load("[rcx+rdx*4+8]") == ("rcx", "rdx*4+8"),
+          "N22: SIB+disp [rcx+rdx*4+8] matched")
+
+    # ---- B3/B4: register helper (width-aware aliasing, base vs scaled index) ----
+    from DriverBuddyReloaded import registers as _regs
+    check("ecx" in _regs.aliases("rcx") and "rcx" in _regs.aliases("ecx"),
+          "B3: rcx and ecx share one alias group")
+    check(_regs.aliases("rcx") == _regs.aliases("cl"),
+          "B3: every rcx-group name resolves to the same alias set")
+    check(_regs.memory_base("[rcx+8]") == "rcx", "B2: [rcx+8] base register is rcx")
+    check(_regs.memory_base("[rcx]") == "rcx", "B2: [rcx] base register is rcx")
+    check(_regs.memory_base("[rdx+rcx*8]") == "rdx",
+          "B4: [rdx+rcx*8] base is rdx, not the scaled index rcx")
+    check(_regs.memory_base("rcx") is None, "B4: a bare register has no memory base")
+    check(_regs.dest_register("ecx") == "ecx" and _regs.dest_register("[rcx]") is None,
+          "B3: dest_register names a bare register, not a memory operand")
+
+    # ---- B1-B4: check_use_after_free end-to-end on synthetic instruction streams ----
+    from DriverBuddyReloaded import heuristics as _heur2
+
+    class _Blk:
+        def __init__(self, s, e):
+            self.start_ea, self.end_ea = s, e
+
+        def succs(self):
+            return []
+
+    class _Func:
+        def __init__(self, s, e):
+            self.start_ea, self.end_ea = s, e
+
+    def _run_uaf(instrs, base=0x100):
+        # instrs: list of (mnem, op0, op1) laid out at base, base+4, ...
+        table = {base + 4 * k: t for k, t in enumerate(instrs)}
+        end = base + 4 * len(instrs)
+        func = _Func(base, end)
+        idafuncs_stub.get_func = lambda ea, f=func: f
+        idafuncs_stub.get_func_name = lambda ea: "TestHandler"
+        idaapi_stub.FlowChart = lambda fn, flags=0, blk=_Blk(base, end): [blk]
+        idc_stub.print_insn_mnem = lambda ea, t=table: t.get(ea, ("", "", ""))[0]
+        idc_stub.print_operand = lambda ea, n, t=table: t.get(ea, ("", "", ""))[1 + n]
+        idc_stub.next_head = lambda ea, e=end: (ea + 4) if (ea + 4) < e else _BADADDR
+        idautils_stub.CodeRefsFrom = lambda ea, flow: iter([])
+        rep_u = reporting.Reporter()
+        _heur2.check_use_after_free(rep_u, AnalysisContext(), base)
+        return len([f for f in rep_u.by_category("heuristic")
+                    if "use-after-free" in f.title.lower()])
+
+    _free = "cs:__imp_ExFreePoolWithTag"
+    check(_run_uaf([("call", _free, ""), ("mov", "rax", "[rcx]")]) == 1,
+          "B1/B2: imported ExFreePoolWithTag then [rcx] dereference is flagged")
+    check(_run_uaf([("call", "ExFreePool", ""), ("mov", "rax", "[rcx]")]) == 1,
+          "B1: local ExFreePool call then dereference is flagged")
+    check(_run_uaf([("call", _free, ""), ("mov", "rax", "[rdx+rcx*8]")]) == 0,
+          "B4: freed register used only as a scaled index is not flagged")
+    check(_run_uaf([("call", _free, ""), ("mov", "ecx", "edx"), ("mov", "rax", "[rcx]")]) == 0,
+          "B3: mov ecx,edx clears freed rcx (zero-extension) so later [rcx] is not flagged")
+    check(_run_uaf([("call", _free, ""), ("cmp", "rcx", "0")]) == 0,
+          "B4: cmp rcx,0 (null check, no dereference) is not flagged")
+    check(_run_uaf([("call", _free, ""), ("call", "SomeOtherFunc", ""),
+                    ("mov", "rax", "[rcx]")]) == 0,
+          "UAF: an intervening non-free call clears tracking (caller-saved reg)")
+
+    # ---- B19: settings-UI validation shares config.Feature.validate ----
+    _reject = False
+    try:
+        config.Feature.validate({"CALLCHAIN": True, "IOCTL_SCAN": False})
+    except ValueError:
+        _reject = True
+    check(_reject, "B19: Feature.validate(proposed) rejects CALLCHAIN without IOCTL_SCAN")
+    _accept = True
+    try:
+        config.Feature.validate({"CALLCHAIN": True, "IOCTL_SCAN": True,
+                                 "IOCTL_DECOMPILER": True})
+    except ValueError:
+        _accept = False
+    check(_accept, "B19: Feature.validate(proposed) accepts a coherent mapping")
+    # The no-argument form still validates the live (shipped-default) config.
+    _live_ok = True
+    try:
+        config.Feature.validate()
+    except ValueError:
+        _live_ok = False
+    check(_live_ok, "B19: Feature.validate() with no args validates the live config")
 
     print("\n{} check(s), {} failure(s)".format(total[0], len(failures)))
     return 1 if failures else 0

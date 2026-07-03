@@ -51,6 +51,12 @@ def transitive_callees(start_eas, max_depth: int = None) -> Set[int]:
     result = set()
     frontier = [ea for ea in start_eas]
     depth = 0
+    # NOTE: this loop uses `depth <= max_depth` while trace() below uses
+    # `depth < CALLCHAIN_MAX_DEPTH`, yet both reach the SAME max_depth hops from
+    # the seed: this loop spends its first iteration (depth 0) adding the seeds
+    # themselves to `result`, whereas trace() spends its first iteration (depth 0)
+    # already inspecting the seed's out-edges.  The bounds are intentionally
+    # different so the two stay equivalent -- do not "align" them.
     while frontier and depth <= max_depth:
         nxt = []
         for fea in frontier:

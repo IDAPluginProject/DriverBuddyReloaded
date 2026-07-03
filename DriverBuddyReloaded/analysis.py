@@ -33,12 +33,15 @@ from DriverBuddyReloaded import (
 from DriverBuddyReloaded.utils import AnalysisContext
 
 
-def _stage(rep: "Reporter", name: str, fn, *args, **kwargs) -> None:
-    """Run an analysis stage, catching and logging any exception so the pipeline continues."""
+def _stage(rep: "Reporter", name: str, fn, *args, **kwargs):
+    """Run an analysis stage, catching and logging any exception so the pipeline
+    continues.  Returns the stage's return value (or None if it raised) so stages
+    that produce a result (e.g. driver-type detection) can be isolated too."""
     try:
-        fn(*args, **kwargs)
+        return fn(*args, **kwargs)
     except Exception as exc:
         rep.info("[!] Stage '{}' failed: {}".format(name, exc))
+        return None
 
 
 def _write_pool_file(rep: Reporter, pool: str) -> None:
@@ -96,7 +99,11 @@ def run_analysis(rep: Reporter) -> Dict[str, Any]:
         rep.info("[!] ERR: Unable to enumerate functions; skipping analysis stages")
         return _finalize(rep, driver_type)
 
-    driver_type = utils.get_driver_id(driver_entry_addr, rep, ctx)
+    # Isolated like every other stage: the WDF (populate_wdf) and DDC
+    # (define_ddc) code it drives is fragile, and a failure there must not abort
+    # the whole run -- IOCTL/heuristic analysis can still proceed on WDM defaults.
+    driver_type = _stage(rep, "driver_id", utils.get_driver_id,
+                         driver_entry_addr, rep, ctx) or "unknown"
     if driver_type != "WDM":
         rep.info("[+] Driver type detected: {}".format(driver_type))
     if config.Feature.IRP_MJ_ENUM and driver_type == "WDM":

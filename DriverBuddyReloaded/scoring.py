@@ -99,7 +99,12 @@ def score(rep: Reporter) -> None:
             return 0
         if handler_ea in _opcode_reach_cache:
             return _opcode_reach_cache[handler_ea]
-        reach = transitive_callees({handler_ea})
+        # Reach at least as deep as handler bodies are expanded for the heuristic
+        # checks (HANDLER_SEED_DEPTH) so an opcode emitted anywhere in the handler
+        # subtree is attributable, regardless of how CALLCHAIN_MAX_DEPTH is tuned.
+        # Defaults to CALLCHAIN_MAX_DEPTH (6 >= 4), so unchanged at shipped values.
+        reach = transitive_callees(
+            {handler_ea}, max(config.CALLCHAIN_MAX_DEPTH, config.HANDLER_SEED_DEPTH))
         best = max((sev for fea, sev in opcode_sev_by_func.items() if fea in reach),
                    default=0)
         _opcode_reach_cache[handler_ea] = best

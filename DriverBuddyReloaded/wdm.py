@@ -16,6 +16,20 @@ _IRP_IOSTACK_OFFSET = "[rdx+0B8h]"  # IRP.Tail.Overlay.CurrentStackLocation
 _DISPATCH_ARRAY_SLOT = "+70h"     # DRIVER_OBJECT.MajorFunction base offset
 
 
+def _operand_targets_offset(op_text, offset_tag):
+    """True when a destination operand string stores into a struct slot at
+    `offset_tag` (e.g. '+0E0h]'), independent of the base-register width.
+
+    The previous code sliced a fixed 4-char '[reg' prefix off the operand before
+    the substring test, which silently failed for 2-char base registers:
+    '[r8+0E0h]'[4:] == '0E0h]' drops the leading '+', so the tag '+0E0h]' no
+    longer matched and the DDC store went undetected.  The tag already includes
+    the trailing ']', so testing it against the whole operand is both simpler and
+    width-independent.
+    """
+    return offset_tag in (op_text or "")
+
+
 def check_for_fake_driver_entry(driver_entry_address, rep):
     """
     Checks if DriverEntry in WDM driver is fake and try to recover the real one
@@ -58,13 +72,13 @@ def locate_ddc(driver_entry_address, rep):
     dispatch = {}
     prev_instruction = driver_entry_func[0]
     for i in driver_entry_func[1:]:
-        if _DDC_OFFSET in idc.print_operand(i, 0)[4:] and idc.print_insn_mnem(prev_instruction) == "lea":
+        if _operand_targets_offset(idc.print_operand(i, 0), _DDC_OFFSET) and idc.print_insn_mnem(prev_instruction) == "lea":
             real_ddc = idc.get_name_ea_simple(idc.print_operand(prev_instruction, 1))
             if real_ddc != ida_compat.BADADDR:
                 rep.info("[+] Found `DispatchDeviceControl` at 0x{addr:08x}".format(addr=real_ddc))
                 idc.set_name(real_ddc, "DispatchDeviceControl")
                 dispatch["ddc"] = real_ddc
-        if _DIDC_OFFSET in idc.print_operand(i, 0)[4:] and idc.print_insn_mnem(prev_instruction) == "lea":
+        if _operand_targets_offset(idc.print_operand(i, 0), _DIDC_OFFSET) and idc.print_insn_mnem(prev_instruction) == "lea":
             real_didc = idc.get_name_ea_simple(idc.print_operand(prev_instruction, 1))
             rep.info("[+] Found `DispatchInternalDeviceControl` at 0x{addr:08x}".format(addr=real_didc))
             idc.set_name(real_didc, "DispatchInternalDeviceControl")
@@ -132,10 +146,18 @@ def define_ddc(ddc_address, rep):
     rcx_flag = 0
     io_stack_flag = 0
     irp_reg_flag = 0
+    # Whether the IRP / IO_STACK_LOCATION pointer register has been resolved to a
+    # real register yet.  Guards the `<canary> in disasm` tests below so the
+    # placeholder sentinels ("irp_reg", "io_stack_reg") can never spuriously match
+    # real disassembly text (N25).  Behaviour is otherwise unchanged: an unresolved
+    # sentinel never appears in disassembly, so these guards only make that
+    # explicit.
+    irp_resolved = False
+    io_stack_resolved = False
     for i in idautils.FuncItems(ddc_address):
         disasm = ida_compat.disasm_text(i)
         src = idc.print_operand(i, 1)
-        if "rdx" in disasm and rdx_flag != 1 or irp_reg in disasm and irp_reg_flag != 1:
+        if ("rdx" in disasm and rdx_flag != 1) or (irp_resolved and irp_reg in disasm and irp_reg_flag != 1):
             # `IO_STACK_LOCATION` (IRP + 0B8h)
             if "+0B8h" in disasm:
                 if "rdx+0B8h" in src or irp_reg + "+0B8h" in src:
@@ -143,6 +165,7 @@ def define_ddc(ddc_address, rep):
                     if idc.print_insn_mnem(i) == "mov":
                         io_stack_reg = idc.print_operand(i, 0)
                         io_stack_flag = 0
+                        io_stack_resolved = True
                 else:
                     ida_compat.op_struct_offset(i, 0, irp_id)
             # `IRP + SystemBuffer` (IRP + 18h)
@@ -161,6 +184,7 @@ def define_ddc(ddc_address, rep):
             elif idc.print_insn_mnem(i) == "mov" and (src == "rdx" or src == irp_reg):
                 irp_reg = idc.print_operand(i, 0)
                 irp_reg_flag = 0
+                irp_resolved = True
             # rdx got clobbered
             elif idc.print_insn_mnem(i) == "mov" and idc.print_operand(i, 0) == "rdx":
                 rdx_flag = 1
@@ -180,7 +204,7 @@ def define_ddc(ddc_address, rep):
             # rcx got clobbered
             elif idc.print_insn_mnem(i) == "mov" and idc.print_operand(i, 0) == "rcx":
                 rcx_flag = 1
-        elif io_stack_reg in disasm and io_stack_flag != 1:
+        elif io_stack_resolved and io_stack_reg in disasm and io_stack_flag != 1:
             # `IO_STACK_LOCATION + DeviceIoControlCode` (+18h)
             if io_stack_reg + "+18h" in disasm:
                 if io_stack_reg + "+18h" in src:
@@ -193,9 +217,11 @@ def define_ddc(ddc_address, rep):
                     ida_compat.op_struct_offset(i, 1, io_stack_location_id)
                 else:
                     ida_compat.op_struct_offset(i, 0, io_stack_location_id)
-            # `IO_STACK_LOCATION + OutputBufferLength` (+8)
-            elif io_stack_reg + "+8" in disasm:
-                if io_stack_reg + "+8" in src:
+            # `IO_STACK_LOCATION + OutputBufferLength` (+8).  Anchor on the closing
+            # bracket so this does not also match +80h / +88h etc. (N24): IDA prints
+            # offset 8 as "[reg+8]" (single digit, no 'h'), so "reg+8]" is exact.
+            elif io_stack_reg + "+8]" in disasm:
+                if io_stack_reg + "+8]" in src:
                     ida_compat.op_struct_offset(i, 1, io_stack_location_id)
                 else:
                     ida_compat.op_struct_offset(i, 0, io_stack_location_id)

@@ -1,7 +1,15 @@
 {
   "tool": "DriverBuddyReloaded",
   "driver": "HEVD.sys",
-  "generated": "golden",
+  "sha256": "bfa54bf396e0453c36afeb1b3a7a04e855532464440aa6b428e0a6308c8818f2",
+  "generated": "2026-07-03-1783060782",
+  "severity_counts": {
+    "INFO": 5,
+    "HIGH": 60,
+    "LOW": 27,
+    "CRITICAL": 11,
+    "MEDIUM": 14
+  },
   "findings": [
     {
       "category": "device_name",
@@ -1109,7 +1117,7 @@
       "category": "acl",
       "title": "IoCreateDevice: world-accessible by default",
       "ea": "0x14008a06b",
-      "func": "DriverEntry",
+      "func": "Real_Driver_Entry",
       "severity": "LOW",
       "detail": "IoCreateDevice assigns no security descriptor; accessible to all users. Consider IoCreateDeviceSecure with a restrictive SDDL.",
       "data": {}
@@ -1118,7 +1126,7 @@
       "category": "symlink",
       "title": "IoCreateSymbolicLink: \\DosDevices\\HackSysExtremeVulnerableDriver",
       "ea": "0x14008a0e9",
-      "func": "DriverEntry",
+      "func": "Real_Driver_Entry",
       "severity": "INFO",
       "detail": "Symbolic link exposes device to Win32 namespace; verify DACL on the target device object.",
       "data": {}
@@ -1554,11 +1562,38 @@
     },
     {
       "category": "heuristic",
+      "title": "TOCTOU double-fetch: [rsi+rdi*8] read at 0x140085c03 and 0x140085c2b without intervening ProbeForRead",
+      "ea": "0x140085c03",
+      "func": "GetArbitraryReadWriteHelperObjecNameNonPagedPoolNx",
+      "severity": "MEDIUM",
+      "detail": "0x140085c03 -> 0x140085c2b; user-pointer field re-read with no ProbeForRead/ProbeForWrite between",
+      "data": {}
+    },
+    {
+      "category": "heuristic",
+      "title": "TOCTOU double-fetch: [rsi+rdi*8] read at 0x140085ab7 and 0x140085ad1 without intervening ProbeForRead",
+      "ea": "0x140085ab7",
+      "func": "DeleteArbitraryReadWriteHelperObjecNonPagedPoolNx",
+      "severity": "MEDIUM",
+      "detail": "0x140085ab7 -> 0x140085ad1; user-pointer field re-read with no ProbeForRead/ProbeForWrite between",
+      "data": {}
+    },
+    {
+      "category": "heuristic",
       "title": "TOCTOU double-fetch: [rcx+rdx] read at 0x1400011e0 and 0x140001200 without intervening ProbeForRead",
       "ea": "0x1400011e0",
       "func": "memmove",
       "severity": "MEDIUM",
       "detail": "0x1400011e0 -> 0x140001200; user-pointer field re-read with no ProbeForRead/ProbeForWrite between",
+      "data": {}
+    },
+    {
+      "category": "heuristic",
+      "title": "TOCTOU double-fetch: [r14+rdi*8] read at 0x140085dc5 and 0x140085df0 without intervening ProbeForRead",
+      "ea": "0x140085dc5",
+      "func": "SetArbitraryReadWriteHelperObjecNameNonPagedPoolNx",
+      "severity": "MEDIUM",
+      "detail": "0x140085dc5 -> 0x140085df0; user-pointer field re-read with no ProbeForRead/ProbeForWrite between",
       "data": {}
     },
     {

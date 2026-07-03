@@ -5,6 +5,151 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Bug-fix pass from the 2026-06/07 two-part code review (findings B1-B19, N20-N29).
+One commit per fix; each `Fixed` bullet below is tagged with its review id.
+
+### Added
+
+- `DriverBuddyReloaded/registers.py`: pure-Python x86/x64 register helpers (alias
+  groups, memory-operand base extraction) with no IDA dependency, unit-tested
+  offline and shared by the register-tracking heuristics.
+
+### Fixed
+
+- (B1, B2, B3, B4, B7, B16) `heuristics.check_use_after_free()`: rewritten on top
+  of `registers.py`. Previously it (B1) matched the free via raw
+  `idc.print_operand`, so an imported `call cs:__imp_ExFreePoolWithTag` was never
+  recognised and the check never started; (B2) put `mov` in its write-set, so the
+  canonical `mov rax, [rcx]` dereference-after-free was treated as a kill and never
+  flagged; (B3) killed freed state with `op0.startswith(reg)`, so `mov ecx, edx`
+  did not clear a freed `rcx` (x64 zero-extension) and produced false positives;
+  (B4) matched the freed register anywhere in the operand text, firing on
+  index-only uses like `[rdx+rcx*8]` and on `cmp rcx, 0`. It now seeds the CFG walk
+  at the true entry block (B7), frees via `_callee_name` (import-aware), flags a use
+  only on a base dereference of the freed register, kills alias-aware, and clears
+  tracking across intervening (caller-saved-clobbering) calls. Sixteen new
+  regression checks (register helpers + end-to-end synthetic instruction streams).
+  NOTE: this intentionally changes `use-after-free` findings (removing prior false
+  positives); the golden regression must be re-run in IDA and re-baselined.
+- (N26) `ida_compat.import_std_type()` (IDA < 9 path): the failure check
+  `tid in (None, BADADDR, -1)` treated ordinal `0` as a valid type. Type ordinals
+  are 1-based, so a non-positive result now also counts as "not found" (the `None`
+  test short-circuits before the numeric comparison). Latent robustness fix.
+- (B19) `settings_ui._on_ok()` / `config.Feature.validate()`: the settings dialog
+  reimplemented the feature-flag coherence rules, so a new constraint added to
+  `Feature.validate()` would not be enforced by the UI. The rules now live once in
+  `Feature._coherence_errors()`; `validate()` accepts an optional proposed
+  `{flag: bool}` mapping and the dialog calls it, so UI and startup validation can
+  no longer drift. Three new regression checks.
+- (B18) `dump_pool_tags.py`: the pool-tag scanners compared the operand type
+  against the bare literal `5` instead of the named `idc.o_imm`, an opaque magic
+  number inconsistent with the rest of the codebase. Now use `idc.o_imm`.
+- (B5, B13) `ioctl_decoder.find_ioctls()`: the fuzzy `IoControlCode` fallback
+  scanner called `idc.op_dec()` on every match to coerce the operand to decimal
+  before reading it back as text. `op_dec` is a **persistent IDB write** -- it
+  silently rewrote the operand display radix at every match site, including ones
+  that were not IOCTLs. Now the immediate is read directly with
+  `idc.get_operand_value()` (no IDB mutation, no format-dependent text
+  round-trip), and the second (source) operand is tried before the first, matching
+  where the code actually sits in the observed compare/move patterns. Two new
+  regression checks.
+- (N22, N23) `heuristics.check_double_fetch()`: (N22) the memory-load regex
+  `\[(\w+)(?:\+(\w+))?\]` matched only `[reg]`/`[reg+disp]` and silently skipped
+  SIB/indexed loads, so a double-fetch through `[rcx+rdx*4]` was missed even
+  though the operand-type filter already admitted them; the regex now captures the
+  base plus the full bracket remainder. (N23) only the first two reads of a
+  `(reg, offset)` were compared, so a probe between reads 1 and 2 masked a genuine
+  race between reads 2 and 3; now every adjacent read pair is checked and the
+  first unprotected, CFG-reachable pair is reported. Four new regex regression
+  checks.
+- (B9) `scoring._opcode_reach_sev()` and `heuristics._user_pointer_tainted()`:
+  these handler-subtree reachability queries used the default
+  `CALLCHAIN_MAX_DEPTH`, which is independent of the `HANDLER_SEED_DEPTH` at which
+  handler bodies are discovered. Both are user-tunable, so lowering
+  `CALLCHAIN_MAX_DEPTH` below `HANDLER_SEED_DEPTH` could make attribution/taint
+  shallower than discovery. They now reach `max(CALLCHAIN_MAX_DEPTH,
+  HANDLER_SEED_DEPTH)` -- identical to today at the shipped defaults (6 >= 4), but
+  robust to tuning.
+- (N28) `callchain.py`: investigated the apparent `<` vs `<=` depth-bound
+  mismatch between `trace()` and `transitive_callees()` and confirmed they reach
+  the same hop count (the `<=` loop spends its first iteration seeding the start
+  set). Added a comment so the intentionally-different bounds are not "aligned"
+  into an off-by-one later. No behavioural change.
+- (B8) `ioctl_decoder._collect_switch_cases()`: scanned only the primary chunk
+  (`start_ea..end_ea` via `next_head`), so a jump-table switch located in a
+  secondary/tail function chunk (SEH funclet, `__guard_*` thunk) was skipped and
+  its IOCTLs lost. Now iterates every instruction head across all chunks via
+  `idautils.FuncItems`.
+- (N29) `analysis.run_analysis()`: `utils.get_driver_id()` was the only pipeline
+  step not wrapped in `_stage()`, so an exception in its fragile WDF/DDC code
+  aborted the entire run. `_stage()` now returns the wrapped call's value (a no-op
+  for the void stages), and `get_driver_id` runs through it, falling back to an
+  `"unknown"` driver type so IOCTL and heuristic analysis still proceed.
+- (N21) `wdf.populate_wdf()`: the result of `idc.get_first_dref_to(idx - 2)` was
+  used directly in `addr + ptr_size + ...` reads and then passed to
+  `ida_bytes.del_items()` / `apply_struct_ptr()` with no BADADDR check. When the
+  library string had no data reference the code read a garbage VA and could apply
+  the WDFFUNCTIONS type at a wrong-but-valid address. Now bails cleanly when the
+  reference or the derived `WdfFunctions` pointer is invalid, and guards the K/U
+  prefix read against the segment boundary.
+- (N24, N25) `wdm.define_ddc()` (cosmetic struct-member labelling): the
+  `IO_STACK_LOCATION.OutputBufferLength` test `io_stack_reg + "+8" in disasm`
+  also matched `+80h`/`+88h` (substring), so a store to offset 0x80/0x88 was
+  mislabelled as the +8 field; now anchored on the closing bracket (`+8]`). The
+  IRP / IO_STACK_LOCATION canary registers are now guarded by explicit
+  `*_resolved` flags so the placeholder sentinel strings can never match real
+  disassembly. Both are labelling-only fixes; IOCTL recovery is unaffected.
+- (N20) `wdm.locate_ddc()`: matched the dispatch-slot offset with
+  `_DDC_OFFSET in idc.print_operand(i, 0)[4:]`, hard-coding a 4-character `[reg`
+  prefix. For a 2-character base register the slice ate the leading `+`
+  (`"[r8+0E0h]"[4:] == "0E0h]"`), so `MajorFunction[IRP_MJ_DEVICE_CONTROL]` stores
+  through r8/r9 were not recognised and the DDC (and the internal-DC variant) went
+  undetected. Replaced with a width-independent `_operand_targets_offset()` helper
+  (the offset tag already includes the trailing `]`). Four new regression checks.
+- (N27) `device_name_finder.extract_unicode_strings()`: decoded matches with the
+  BOM-/native-endian-dependent `"utf-16"` codec while every other decode site uses
+  explicit `"utf-16-le"`. The regex matches `<ascii><00>` pairs (LE), so the result
+  was correct on the little-endian hosts IDA runs on but latently non-portable and
+  inconsistent. Now decodes `"utf-16-le"` explicitly. One new regression check.
+- (B12) `utils.is_driver()`: returned the first entry-point-named function found in
+  segment/address order, so a driver carrying both a `GsDriverEntry` stub and a
+  `DriverEntry` (or `DriverEntry_0`) resolved nondeterministically depending on PE
+  layout. Now collects all matches and returns by a fixed preference
+  (`GsDriverEntry` > `DriverEntry` > `DriverEntry_0`); `GsDriverEntry` is the true
+  /GS entry point and is unwrapped downstream by `check_for_fake_driver_entry`. Two
+  new regression checks.
+- (B10) `DriverBuddyReloaded.py` (IOCTL row-delete / "Invalid IOCTL"): removing an
+  IOCTL only called `idc.del_extra_cmt(ea, E_PREV + 0)`, which clears just the
+  first anterior line. `make_comment` can append several anterior lines
+  (E_PREV, E_PREV+1, ...), so the rest leaked and stayed in the decompiler view.
+  New `ida_compat.del_anterior_cmts(ea)` deletes every anterior line (highest
+  index first); both delete paths now use it.
+- (B11) `DriverBuddyReloaded.make_comment()`: the duplicate-suppression check
+  (`string not in current_comment`) compared the whole IOCTL `#define`, whose
+  macro name is derived from the input filename. Re-decoding the same IOCTL after
+  the input was renamed produced a different macro name, defeated the check, and
+  appended a second (near-identical) `#define`, so comments grew on every re-run.
+  Dedup now keys on the driver-name-independent `CTL_CODE(...)` tail; a non-IOCTL
+  comment string is unaffected.
+- (B14) `utils._build_sddl_map()`: decoded every candidate string as UTF-16LE
+  regardless of the recorded string type, so an ASCII SDDL was mangled to garbage
+  and dropped (and `get_strlit_contents` transcodes wide strings to UTF-8, which
+  also mis-decodes when read back as UTF-16). Replaced with `_decode_sddl_at()`,
+  which reads raw bytes and tries wide-then-narrow, cutting at the first NUL
+  (same approach as the symlink-path decoder). Two new regression checks.
+- (B17) `signatures.py`: filled gaps in the function/instruction sets.
+  `VALIDATION_FUNCS` gains the `RtlUIntAdd/Sub/Mult` safe-arithmetic family.
+  `FREE_POOL_FUNCS` gains `IoFreeMdl` (its freed pointer is the first argument,
+  which the UAF register model tracks); lookaside frees and `MmFreePagesFromMdl`
+  are deliberately excluded and documented, since their freed pointer is not the
+  first argument / the MDL stays valid. `PRIV_INSN_SEVERITY` gains the
+  descriptor/task-register stores `sidt`/`sgdt`/`sldt`/`str` (KASLR-leak
+  primitives); `rdmsr`/`wrmsr`/`rdpmc` are intentionally kept out (already scanned
+  whole-binary via `OPCODES`, so listing them here would double-report). Five new
+  regression checks in `tests/test_dbr.py`.
+
 ## [2.3.0] - 2026-06-29
 
 ### Added

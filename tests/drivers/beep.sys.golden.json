@@ -1,7 +1,12 @@
 {
   "tool": "DriverBuddyReloaded",
   "driver": "beep.sys",
-  "generated": "golden",
+  "sha256": "98cdbd998cf136fbbb9ecce829717b917374d0af20780bfd02767303c2756d85",
+  "generated": "2026-07-03-1783060861",
+  "severity_counts": {
+    "INFO": 1,
+    "LOW": 3
+  },
   "findings": [
     {
       "category": "device_name",
@@ -60,7 +65,7 @@
       "category": "acl",
       "title": "IoCreateDevice: world-accessible by default",
       "ea": "0x1c00017b8",
-      "func": "DriverEntry",
+      "func": "Real_Driver_Entry",
       "severity": "LOW",
       "detail": "IoCreateDevice assigns no security descriptor; accessible to all users. Consider IoCreateDeviceSecure with a restrictive SDDL.",
       "data": {}

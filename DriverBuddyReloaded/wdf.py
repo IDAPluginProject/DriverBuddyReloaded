@@ -81,7 +81,13 @@ def populate_wdf(rep: "Reporter") -> str:
         if idx == ida_compat.BADADDR:
             continue
         _mdf_found = True
-        prefix_char = chr(ida_bytes.get_byte(idx - 2))
+        # The K/U prefix sits two bytes before the matched "mdfLibrary".  Guard the
+        # segment boundary: if the string starts at the very start of the segment
+        # there is no prefix byte to read (get_byte would read out of bounds).
+        if idx - 2 >= segm.start_ea:
+            prefix_char = chr(ida_bytes.get_byte(idx - 2))
+        else:
+            prefix_char = "?"
         actual_library = prefix_char + "mdfLibrary"
         # K-prefix = KMDF, U-prefix = UMDF
         if prefix_char == "K":
@@ -89,7 +95,16 @@ def populate_wdf(rep: "Reporter") -> str:
         elif prefix_char == "U":
             detected_type = "UMDF"
         rep.info("[WDF] Found %s string at 0x%x (type: %s)" % (actual_library, idx - 2, detected_type))
+        # WDF_BIND_INFO references the library-name string; the field that holds
+        # that pointer is our anchor for the version/WdfFunctions offsets.  If no
+        # reference exists we cannot locate the structure -- bail rather than
+        # dereference BADADDR (which would read a garbage VA and, worse, feed a
+        # bogus address to del_items / apply_struct_ptr below).
         addr = idc.get_first_dref_to(idx - 2)
+        if addr in (None, ida_compat.BADADDR):
+            rep.info("[!] WDF: no data reference to the mdfLibrary string at 0x%x; "
+                     "cannot locate WDF_BIND_INFO" % (idx - 2))
+            continue
         version = VersionInfo(
             library=actual_library,
             major=idc.get_wide_dword(addr + ptr_size + MAJOR_VERSION_OFFSET),
@@ -98,6 +113,10 @@ def populate_wdf(rep: "Reporter") -> str:
         if tid is None:
             continue
         wdf_func = ida_compat.get_ptr(addr + ptr_size + WDF_FUNCTIONS_OFFSET)
+        if wdf_func in (None, 0, ida_compat.BADADDR):
+            rep.info("[!] WDF: WdfFunctions pointer at 0x%x is invalid; "
+                     "skipping struct application" % (addr + ptr_size + WDF_FUNCTIONS_OFFSET))
+            continue
         size = ida_compat.struct_size(tid)
         rep.info("[WDF] Applying struct (size=%s) at %s" % (hex(size), hex(wdf_func)))
         ida_bytes.del_items(wdf_func, 0, ptr_size)

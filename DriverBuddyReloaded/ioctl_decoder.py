@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 import ida_funcs
 import idaapi
+import idautils
 import idc
 
 from DriverBuddyReloaded import config, ida_compat
@@ -452,14 +453,17 @@ def _collect_switch_cases(func_ea: int):
     """
     out = []
     try:
-        f = idaapi.get_func(func_ea)
-        if not f:
-            return out
         calc = getattr(idaapi, "calc_switch_cases", None)
-        cur = f.start_ea
-        while cur != idc.BADADDR and cur < f.end_ea:
+        if calc is None:
+            return out
+        # Iterate every instruction head across ALL chunks of the function
+        # (idautils.FuncItems), not just the primary start_ea..end_ea range.
+        # A jump-table switch can live in a secondary/tail chunk (SEH funclet,
+        # __guard_* thunk), which the old start_ea..end_ea + next_head walk never
+        # visited -- losing the IOCTLs dispatched from that chunk.
+        for cur in idautils.FuncItems(func_ea):
             si = _get_switch_info(cur)
-            if si is not None and getattr(si, "ncases", 0) and calc is not None:
+            if si is not None and getattr(si, "ncases", 0):
                 try:
                     defjump = int(getattr(si, "defjump", idc.BADADDR))
                     cat = calc(cur, si)
@@ -471,7 +475,6 @@ def _collect_switch_cases(func_ea: int):
                             out.append((int(cvec[j]) & 0xffffffff, cur))
                 except Exception:
                     pass
-            cur = idc.next_head(cur, f.end_ea)
     except Exception:
         pass
     return out
@@ -706,15 +709,17 @@ def find_ioctls(rep: Reporter) -> bool:
     result = False
     rep.info("[>] Searching for IOCTLs found by IDA...")
     for ea in ida_compat.iter_text_matches("IoControlCode"):
-        for opnd in (0, 1):
+        # Prefer the second (source) operand: in every observed compare/move
+        # against IoControlCode the code sits there; fall back to the first.
+        # Read the immediate value directly with get_operand_value rather than
+        # op_dec + print_operand + int() -- op_dec is a *persistent IDB write*
+        # (it rewrites the operand's display radix to decimal at every match
+        # site, even ones that turn out not to be IOCTLs), and the printed-text
+        # round-trip is format-dependent and fragile.
+        for opnd in (1, 0):
             if idc.get_operand_type(ea, opnd) != idc.o_imm:
                 continue
-            idc.op_dec(ea, opnd)
-            try:
-                raw = idc.print_operand(ea, opnd)
-                ioctl_code = int(raw, 16) if raw.startswith(("0x", "0X")) else int(raw)
-            except (TypeError, ValueError):
-                continue
+            ioctl_code = idc.get_operand_value(ea, opnd) & 0xffffffff
             if not _is_valid_ctl_code(ioctl_code):
                 continue
             d = decode(ioctl_code)

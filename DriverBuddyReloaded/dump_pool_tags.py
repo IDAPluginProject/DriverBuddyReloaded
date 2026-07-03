@@ -94,7 +94,7 @@ def find_pool_tags() -> Dict[str, Set[str]]:
     """
 
     def _decode(prev, tags, caller_name):
-        if idc.get_cmt(prev, 0) == 'Tag' and idc.get_operand_type(prev, 1) == 5:
+        if idc.get_cmt(prev, 0) == 'Tag' and idc.get_operand_type(prev, 1) == idc.o_imm:
             tag_raw = idc.get_operand_value(prev, 1)
             tags.setdefault(_decode_tag(tag_raw), set()).add(caller_name)
             return True
@@ -119,7 +119,7 @@ def collect_fallback() -> Dict[str, Set[str]]:
     """
 
     def _decode(prev, tags, caller_name):
-        if idc.get_operand_type(prev, 1) == 5:
+        if idc.get_operand_type(prev, 1) == idc.o_imm:
             tag_raw = idc.get_operand_value(prev, 1)
             if _is_valid_pool_tag(tag_raw):
                 tags.setdefault(_decode_tag(tag_raw), set()).add(caller_name)

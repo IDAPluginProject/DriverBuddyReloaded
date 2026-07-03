@@ -12,7 +12,7 @@ custom.py -- that file is the intended extension point and
 is imported here as DRIVER_FUNCTIONS.
 """
 
-from DriverBuddyReloaded.config import SEV_MEDIUM, SEV_HIGH, SEV_CRITICAL  # noqa: F401
+from DriverBuddyReloaded.config import SEV_LOW, SEV_MEDIUM, SEV_HIGH, SEV_CRITICAL  # noqa: F401
 from DriverBuddyReloaded.custom import driver_functions as DRIVER_FUNCTIONS
 
 # ---------------------------------------------------------------------------
@@ -163,12 +163,24 @@ OPCODE_SEVERITY = {
 # Privileged CPU instructions flagged when reachable from a dispatch handler.
 # Port I/O (in/out) and descriptor-table loads are the inline primitives behind
 # most BYOVD hardware-access drivers.
+#
+# rdmsr/wrmsr/rdpmc are intentionally NOT listed here: they are already scanned
+# whole-binary via signatures.OPCODES + OPCODE_SEVERITY (find_opcodes.find), and
+# duplicating them in the handler-scoped check_privileged_instructions pass would
+# emit two findings at the same address.
+#
+# The descriptor/task-register *stores* (sidt/sgdt/sldt/str) are not privileged in
+# the ring-0 sense -- they execute in user mode too -- but a driver that runs one
+# in an IOCTL handler and returns the result leaks the IDT/GDT/LDT/TSS base, a
+# canonical KASLR-defeat primitive, so they are flagged (lower severity than the
+# table *loads* lgdt/lidt/lldt/ltr, which modify the tables).
 PRIV_INSN_SEVERITY = {
     "out": SEV_CRITICAL, "outs": SEV_CRITICAL, "outsb": SEV_CRITICAL,
     "outsw": SEV_CRITICAL, "outsd": SEV_CRITICAL,
     "in": SEV_HIGH, "ins": SEV_HIGH, "insb": SEV_HIGH, "insw": SEV_HIGH, "insd": SEV_HIGH,
     "invd": SEV_HIGH, "wbinvd": SEV_MEDIUM,
     "lgdt": SEV_HIGH, "lidt": SEV_HIGH, "lldt": SEV_HIGH, "ltr": SEV_HIGH, "lmsw": SEV_HIGH,
+    "sidt": SEV_MEDIUM, "sgdt": SEV_MEDIUM, "sldt": SEV_LOW, "str": SEV_LOW,
     "cli": SEV_MEDIUM, "sti": SEV_MEDIUM, "hlt": SEV_MEDIUM,
 }
 
@@ -213,6 +225,7 @@ VALIDATION_FUNCS = {
     "MmSecureVirtualMemoryEx",
     "MmUnsecureVirtualMemory",
     # Safe arithmetic (ntintsafe.h / RtlSafeInt variants)
+    "RtlUIntAdd", "RtlUIntSub", "RtlUIntMult",
     "RtlULongAdd", "RtlULongSub", "RtlULongMult",
     "RtlULongLongAdd", "RtlULongLongSub", "RtlULongLongMult",
     "RtlSizeTAdd", "RtlSizeTSub", "RtlSizeTMult",
@@ -321,11 +334,19 @@ PROBE_FUNCS = {
     "ProbeForWrite",
 }
 
-# Pool-free APIs whose freed-pointer register is tracked by the UAF check.
+# Pool/object-free APIs whose freed-pointer register is tracked by the UAF check.
+# CONSTRAINT: only APIs whose freed pointer is the FIRST argument belong here --
+# the UAF check (heuristics.check_use_after_free / _global) models the free by
+# tracking the first-argument register (rcx/ecx). APIs that free a non-first
+# argument (ExFreeToLookasideListEx / ExFreeToPagedLookasideList free the 2nd
+# arg) or that do not dangle the first argument (MmFreePagesFromMdl frees the
+# pages but the MDL passed in arg1 remains valid and is freed separately) are
+# intentionally excluded to avoid tracking the wrong pointer.
 FREE_POOL_FUNCS = {
     "ExFreePool",
     "ExFreePoolWithTag",
     "ExFreePool2",
+    "IoFreeMdl",  # frees the MDL (arg1); the MDL pointer dangles afterwards
 }
 
 # Device-creation APIs that set no security descriptor inline on the create call,

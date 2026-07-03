@@ -1,7 +1,15 @@
 {
   "tool": "DriverBuddyReloaded",
   "driver": "ALSysIO64.sys",
-  "generated": "golden",
+  "sha256": "7a20ca8f9361eb892257b3693095ffeee61457dc4e22d9b119e3a9f3a1507069",
+  "generated": "2026-07-03-1783060958",
+  "severity_counts": {
+    "INFO": 11,
+    "CRITICAL": 17,
+    "HIGH": 48,
+    "LOW": 14,
+    "MEDIUM": 4
+  },
   "findings": [
     {
       "category": "device_name",

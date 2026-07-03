@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python tests/test_dbr.py
 DBR_SDK=900 python tests/test_dbr.py    # simulate IDA 9.0 import paths
 ```
-28 checks, all logic that does not touch the live IDA database. Run both variants on every change.
+71 checks, all logic that does not touch the live IDA database. Run both variants on every change.
 
 ### Run cross-version smoke tests (requires all three IDA installs)
 ```
@@ -55,6 +55,8 @@ DriverBuddyReloaded.py          <- IDA plugin_t (init / run / term / UI hooks)
         |                         alloca, pool-alloc-trust, physical-mem-ref, double-fetch (TOCTOU),
         |                         privileged-instructions (port-IO / mov cr*), write-primitives
         |                         (write-what-where), use-after-free (register CFG walk + global)
+        +-- registers.py          pure x86/x64 register-alias + operand-base helpers
+        |                         (no IDA import) shared by the UAF register tracking
         +-- exports_audit.py      zero-xref export detection
         +-- find_opcodes.py       opcode scan (off by default: Feature.SEGMENT_OPCODE_SCAN)
         +-- scoring.py            IOCTL risk scoring + severity bump
@@ -149,6 +151,11 @@ Heuristic callee matching is import-aware: `heuristics._callee_name()` strips th
 The deep heuristics (double-fetch, UAF, pool-alloc-trust, privilege-gate, IRQL, MDL, alloca, privileged-instructions, write-primitives) scan the dispatcher **and its transitive callees**: `heuristics.run()` expands `callchain.handler_seed_eas()` via `callchain.transitive_callees(..., config.HANDLER_SEED_DEPTH)` (library/thunk leaves excluded). Double-fetch is additionally gated on `_user_pointer_tainted()` (only handlers reachable from a METHOD_NEITHER IOCTL) and a single-path CFG check, so METHOD_BUFFERED kernel-buffer re-reads are not flagged. `check_privilege_gate` is path-level: a privilege gate anywhere on a dispatcher subtree suppresses the whole subtree.
 
 `ioctl_decoder` resolves each switch case's handler function (first in-binary call in the case body) into `finding.data['handler_ea']` / `handler_name`. `callchain.trace` seeds from those handlers, and `scoring.score` attributes sinks to the IOCTL's own handler (falling back to the dispatcher tagged `data['sink_attribution'] = "dispatcher-wide"`), additionally bumping an IOCTL whose handler reaches a privileged inline opcode (wrmsr/port-IO/`mov cr*`). This replaced the old behaviour where every IOCTL in a monolithic dispatcher inherited the union of all sinks reachable from the dispatcher.
+
+The two "handler-subtree reach" queries that are *not* the heuristic seed expansion -- `scoring._opcode_reach_sev()` and `heuristics._user_pointer_tainted()` -- reach `max(CALLCHAIN_MAX_DEPTH, HANDLER_SEED_DEPTH)` so they never fall short of the depth at which handler bodies were discovered, even if the two depths are tuned independently in the settings UI.
+
+### Register-tracking helpers (registers.py)
+`registers.py` is pure Python (no IDA import, unit-tested offline) and is the single home for x86/x64 register knowledge used by the dataflow heuristics. `aliases(reg)` returns every width alias sharing one physical register (`rcx`/`ecx`/`cx`/`cl`/`ch`) so a write to any alias clears the whole tracked group; `memory_base(op)` returns the *base* register of a memory operand, distinguished from a scaled index, so a freed pointer used only as an index (`[rdx+rcx*8]`) is not mistaken for a dereference. `heuristics.check_use_after_free` is built on these: it flags a UAF only when a freed register (seeded from a `FREE_POOL_FUNCS` call matched via `_callee_name`, so imports count) is dereferenced as a memory base before being reassigned or clobbered by an intervening call. Do not reintroduce raw substring matching on operand text for register comparisons -- use these helpers.
 
 ### Vulnerable function lists
 The surface-scan lists consumed by `utils.get_xrefs()` for the "flagged functions" findings live in `signatures.py`: `C_FUNCTIONS`, `WINAPI_FUNCTIONS`, `WINAPI_FUNCTION_PREFIXES`, and `OPCODES`. The user-editable list is `DriverBuddyReloaded/custom.py` (`driver_functions`), imported into `signatures.py` as `DRIVER_FUNCTIONS`. `WINAPI_FUNCTION_PREFIXES` entries do prefix matching; `WINAPI_FUNCTIONS` entries do exact matching.

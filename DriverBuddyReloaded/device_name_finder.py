@@ -74,7 +74,10 @@ def extract_unicode_strings(buf, n=4):
         r = re.compile(reg)
     for match in r.finditer(buf):
         try:
-            yield String(match.group().decode("utf-16"), match.start())
+            # Explicit little-endian: the regex matches `<ascii><00>` pairs, i.e.
+            # UTF-16LE.  Plain "utf-16" is BOM-/native-endian-dependent (there is no
+            # BOM here) and every other decode site in the plugin uses utf-16-le.
+            yield String(match.group().decode("utf-16-le"), match.start())
         except UnicodeDecodeError:
             pass
 

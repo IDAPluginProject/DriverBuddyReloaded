@@ -196,22 +196,19 @@ class _SettingsDialog:
         root.addWidget(buttons)
 
     def _on_ok(self):
-        """Validate proposed feature-flag combination; accept only when coherent."""
+        """Validate proposed feature-flag combination; accept only when coherent.
+
+        Delegates to config.Feature.validate() so the dialog enforces exactly the
+        same coherence rules as the startup check -- no duplicated rule list to
+        drift out of sync (B19).
+        """
         from PyQt5 import QtWidgets
         proposed = {attr: cb.isChecked() for attr, cb in self._checks.items()}
-        if proposed.get("CALLCHAIN") and not proposed.get("IOCTL_SCAN"):
+        try:
+            config.Feature.validate(proposed)
+        except ValueError as exc:
             QtWidgets.QMessageBox.warning(
-                self._dlg,
-                "Driver Buddy Reloaded",
-                "Callchain tracing requires IOCTL scan to be enabled.",
-            )
-            return
-        if proposed.get("IOCTL_DECOMPILER") and not proposed.get("IOCTL_SCAN"):
-            QtWidgets.QMessageBox.warning(
-                self._dlg,
-                "Driver Buddy Reloaded",
-                "IOCTL decompiler requires IOCTL scan to be enabled.",
-            )
+                self._dlg, "Driver Buddy Reloaded", str(exc))
             return
         self._dlg.accept()
 
